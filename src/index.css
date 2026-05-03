@@ -1,0 +1,85 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-surface: #f8f9ff;
+  --color-surface-dim: #cbdbf5;
+  --color-surface-bright: #f8f9ff;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-low: #eff4ff;
+  --color-surface-container: #e5eeff;
+  --color-surface-container-high: #dce9ff;
+  --color-surface-container-highest: #d3e4fe;
+  --color-on-surface: #0b1c30;
+  --color-on-surface-variant: #42474f;
+  --color-inverse-surface: #213145;
+  --color-inverse-on-surface: #eaf1ff;
+  --color-outline: #727780;
+  --color-outline-variant: #c2c7d1;
+  --color-surface-tint: #2d6197;
+  --color-primary: #00355f;
+  --color-on-primary: #ffffff;
+  --color-primary-container: #00355f;
+  --color-on-primary-container: #8ebdf9;
+  --color-inverse-primary: #a0c9ff;
+  --color-secondary: #006c49;
+  --color-on-secondary: #ffffff;
+  --color-secondary-container: #6cf8bb;
+  --color-on-secondary-container: #00714d;
+  --color-tertiary: #4b2d00;
+  --color-on-tertiary: #ffffff;
+  --color-tertiary-container: #6a4100;
+  --color-on-tertiary-container: #ffa71e;
+  --color-error: #ba1a1a;
+  --color-on-error: #ffffff;
+  --color-error-container: #ffdad6;
+  --color-on-error-container: #93000a;
+  --color-primary-fixed: #d2e4ff;
+  --color-primary-fixed-dim: #a0c9ff;
+  --color-on-primary-fixed: #001c37;
+  --color-on-primary-fixed-variant: #07497d;
+  --color-secondary-fixed: #6ffbbe;
+  --color-secondary-fixed-dim: #4edea3;
+  --color-on-secondary-fixed: #002113;
+  --color-on-secondary-fixed-variant: #005236;
+  --color-tertiary-fixed: #ffddb8;
+  --color-tertiary-fixed-dim: #ffb95f;
+  --color-on-tertiary-fixed: #2a1700;
+  --color-on-tertiary-fixed-variant: #653e00;
+  --color-background: #f8f9ff;
+  --color-on-background: #0b1c30;
+  --color-surface-variant: #d3e4fe;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Manrope", sans-serif;
+  --font-body: "Inter", sans-serif;
+  --font-mono: "Inter", monospace;
+
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+}
+
+@layer base {
+  body {
+    @apply bg-surface text-on-surface font-body;
+  }
+}
+
+.diagonal-hash {
+  background-image: repeating-linear-gradient(45deg, #e2e8f0, #e2e8f0 1px, transparent 1px, transparent 10px);
+}
+
+.zebra-stripe:nth-child(even) {
+  @apply bg-surface-container-low;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  @apply w-1;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  @apply bg-surface-container;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  @apply bg-outline-variant rounded-full;
+}
+
