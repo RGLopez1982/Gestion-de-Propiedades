@@ -3,12 +3,16 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "server": "tsx server.ts",
+    "start": "node build/server.js",
     "client": "vite --port=3000 --host=0.0.0.0",
     "reset-data": "node scripts/reset-data.mjs",
-    "build": "vite build",
+    "build": "vite build && tsc -p tsconfig.server.json",
     "preview": "vite preview",
     "clean": "node -e \"import('node:fs').then(fs => fs.rmSync('dist', { recursive: true, force: true }))\"",
     "lint": "tsc --noEmit"

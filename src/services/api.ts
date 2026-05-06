@@ -2,6 +2,29 @@
 
 const API_BASE = '/api';
 
+export const getSession = async (): Promise<{ authenticated: boolean }> => {
+  const res = await fetch(`${API_BASE}/auth/me`);
+  if (!res.ok) return { authenticated: false };
+  return res.json();
+};
+
+export const login = async (username: string, password: string): Promise<void> => {
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.error || 'No se pudo iniciar sesion');
+  }
+};
+
+export const logout = async (): Promise<void> => {
+  await fetch(`${API_BASE}/auth/logout`, { method: 'POST' });
+};
+
 export interface Property {
   id: number;
   name: string;
@@ -63,8 +86,19 @@ export interface Booking {
   amountTotal?: number;
   amountPaid?: number;
   refundIssued?: boolean | number;
+  receivedBy?: string;
+  bookingSource?: string;
+  paymentMethod?: string;
+  receiptData?: string;
+  receiptName?: string;
+  receiptFiles?: string | ReceiptFile[];
   createdAt?: string;
   property?: string;
+}
+
+export interface ReceiptFile {
+  name: string;
+  data: string;
 }
 
 export interface EventItem {

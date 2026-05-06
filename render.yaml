@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: gestion-propiedades
+    runtime: node
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DB_PATH
+        value: /var/data/data.db
+      - key: SEED_DEMO_DATA
+        value: "false"
+      - key: AUTH_USER
+        value: Maru
+      - key: AUTH_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1

@@ -2,16 +2,103 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import Database from 'better-sqlite3';
+import fs from 'fs';
+import crypto from 'crypto';
 import path from 'path';
 
 dotenv.config();
 
 const app = express();
-const PORT = Number(process.env.SERVER_PORT) || 5000;
+const PORT = Number(process.env.PORT || process.env.SERVER_PORT) || 5000;
+const distPath = path.join(process.cwd(), 'dist');
+const AUTH_USER = process.env.AUTH_USER || 'admin';
+const AUTH_PASSWORD = process.env.AUTH_PASSWORD || 'admin123';
+const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-session-secret-change-me';
+const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 12;
 
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '25mb' }));
+
+const parseCookies = (cookieHeader?: string) => {
+  return (cookieHeader || '').split(';').reduce<Record<string, string>>((cookies, item) => {
+    const [rawKey, ...rawValue] = item.trim().split('=');
+    if (!rawKey) return cookies;
+    cookies[rawKey] = decodeURIComponent(rawValue.join('=') || '');
+    return cookies;
+  }, {});
+};
+
+const signSession = (payload: string) => crypto
+  .createHmac('sha256', SESSION_SECRET)
+  .update(payload)
+  .digest('hex');
+
+const createSessionToken = (username: string) => {
+  const expiresAt = Date.now() + SESSION_MAX_AGE_MS;
+  const payload = `${username}:${expiresAt}`;
+  return `${payload}.${signSession(payload)}`;
+};
+
+const verifySessionToken = (token?: string) => {
+  if (!token) return false;
+
+  const separatorIndex = token.lastIndexOf('.');
+  if (separatorIndex === -1) return false;
+
+  const payload = token.slice(0, separatorIndex);
+  const signature = token.slice(separatorIndex + 1);
+  const expectedSignature = signSession(payload);
+  if (signature.length !== expectedSignature.length) return false;
+  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) return false;
+
+  const [, expiresAt] = payload.split(':');
+  return Number(expiresAt) > Date.now();
+};
+
+const setSessionCookie = (res: express.Response, token: string) => {
+  const secure = process.env.NODE_ENV === 'production';
+  res.setHeader(
+    'Set-Cookie',
+    `gp_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(SESSION_MAX_AGE_MS / 1000)}${secure ? '; Secure' : ''}`
+  );
+};
+
+const clearSessionCookie = (res: express.Response) => {
+  res.setHeader('Set-Cookie', 'gp_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+};
+
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok' });
+});
+
+app.post('/api/auth/login', (req, res) => {
+  const { username, password } = req.body || {};
+  if (username !== AUTH_USER || password !== AUTH_PASSWORD) {
+    return res.status(401).json({ error: 'Usuario o contrasena incorrectos' });
+  }
+
+  setSessionCookie(res, createSessionToken(username));
+  res.json({ authenticated: true, username });
+});
+
+app.post('/api/auth/logout', (_req, res) => {
+  clearSessionCookie(res);
+  res.json({ authenticated: false });
+});
+
+app.get('/api/auth/me', (req, res) => {
+  const cookies = parseCookies(req.headers.cookie);
+  res.json({ authenticated: verifySessionToken(cookies.gp_session) });
+});
+
+app.use('/api', (req, res, next) => {
+  const cookies = parseCookies(req.headers.cookie);
+  if (!verifySessionToken(cookies.gp_session)) {
+    return res.status(401).json({ error: 'Sesion no autorizada' });
+  }
+  next();
+});
 
 // Database
 const dbPath = path.join(process.cwd(), process.env.DB_PATH || 'data.db');
@@ -74,6 +161,12 @@ db.exec(`
     amountTotal REAL DEFAULT 0,
     amountPaid REAL DEFAULT 0,
     refundIssued INTEGER DEFAULT 0,
+    receivedBy TEXT,
+    bookingSource TEXT,
+    paymentMethod TEXT,
+    receiptData TEXT,
+    receiptName TEXT,
+    receiptFiles TEXT,
     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(property_id) REFERENCES properties(id)
   );
@@ -133,6 +226,12 @@ ensureColumn('transactions', 'booking_id', 'INTEGER');
 ensureColumn('bookings', 'amountTotal', 'REAL DEFAULT 0');
 ensureColumn('bookings', 'amountPaid', 'REAL DEFAULT 0');
 ensureColumn('bookings', 'refundIssued', 'INTEGER DEFAULT 0');
+ensureColumn('bookings', 'receivedBy', 'TEXT');
+ensureColumn('bookings', 'bookingSource', 'TEXT');
+ensureColumn('bookings', 'paymentMethod', 'TEXT');
+ensureColumn('bookings', 'receiptData', 'TEXT');
+ensureColumn('bookings', 'receiptName', 'TEXT');
+ensureColumn('bookings', 'receiptFiles', 'TEXT');
 ensureColumn('tenants', 'source', 'TEXT');
 ensureColumn('tenants', 'tags', 'TEXT');
 ensureColumn('tenants', 'notes', 'TEXT');
@@ -211,6 +310,24 @@ const getBookingById = (id: number | bigint) => {
     LEFT JOIN properties ON bookings.property_id = properties.id
     WHERE bookings.id = ?
   `).get(id);
+};
+
+const formatDateDisplay = (value?: string) => {
+  if (!value) return '';
+  const match = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!match) return value;
+  const [, year, month, day] = match;
+  return `${day.padStart(2, '0')}-${month.padStart(2, '0')}-${year}`;
+};
+
+const getReservablePropertyError = (propertyId: unknown) => {
+  if (!propertyId) return 'La reserva debe tener un departamento asignado';
+
+  const property = db.prepare('SELECT id, status FROM properties WHERE id = ?').get(propertyId) as { id: number; status: string } | undefined;
+  if (!property) return 'Departamento no encontrado';
+  if (property.status !== 'Disponible') return `El departamento esta ${property.status} y no se puede reservar`;
+
+  return null;
 };
 
 const ensureTenantFromBooking = (name: string) => {
@@ -511,16 +628,39 @@ app.get('/api/bookings', (req, res) => {
 
 app.post('/api/bookings', (req, res) => {
   try {
-    const { tenant, property_id, guests, checkIn, checkOut, status, amountTotal, amountPaid, refundIssued } = req.body;
+    const {
+      tenant,
+      property_id,
+      guests,
+      checkIn,
+      checkOut,
+      status,
+      amountTotal,
+      amountPaid,
+      refundIssued,
+      receivedBy,
+      bookingSource,
+      paymentMethod,
+      receiptData,
+      receiptName,
+      receiptFiles,
+    } = req.body;
     const dateError = validateBookingDates(checkIn, checkOut);
     if (dateError) {
       return res.status(400).json({ error: dateError });
     }
 
+    if (status !== 'Cancelado') {
+      const propertyError = getReservablePropertyError(property_id);
+      if (propertyError) {
+        return res.status(400).json({ error: propertyError });
+      }
+    }
+
     const conflict = findBookingConflict(Number(property_id), checkIn, checkOut);
     if (conflict) {
       return res.status(409).json({
-        error: `Departamento ocupado hasta ${conflict.checkOut}`,
+        error: `Departamento ocupado hasta ${formatDateDisplay(conflict.checkOut)}`,
         conflict,
       });
     }
@@ -528,8 +668,27 @@ app.post('/api/bookings', (req, res) => {
     const money = normalizeBookingMoney(status, amountTotal, amountPaid, refundIssued);
     ensureTenantFromBooking(tenant);
     const result = db.prepare(
-      'INSERT INTO bookings (tenant, property_id, guests, checkIn, checkOut, status, amountTotal, amountPaid, refundIssued) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(tenant, property_id, guests, checkIn, checkOut, status, money.total, money.paid, money.refunded ? 1 : 0);
+      `INSERT INTO bookings (
+        tenant, property_id, guests, checkIn, checkOut, status, amountTotal, amountPaid, refundIssued,
+        receivedBy, bookingSource, paymentMethod, receiptData, receiptName, receiptFiles
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      tenant,
+      property_id,
+      guests,
+      checkIn,
+      checkOut,
+      status,
+      money.total,
+      money.paid,
+      money.refunded ? 1 : 0,
+      receivedBy || null,
+      bookingSource || null,
+      paymentMethod || null,
+      receiptData || null,
+      receiptName || null,
+      Array.isArray(receiptFiles) ? JSON.stringify(receiptFiles) : receiptFiles || null
+    );
     syncBookingTransactions(result.lastInsertRowid, {
       tenant,
       property_id,
@@ -546,16 +705,39 @@ app.post('/api/bookings', (req, res) => {
 
 app.put('/api/bookings/:id', (req, res) => {
   try {
-    const { tenant, property_id, guests, checkIn, checkOut, status, amountTotal, amountPaid, refundIssued } = req.body;
+    const {
+      tenant,
+      property_id,
+      guests,
+      checkIn,
+      checkOut,
+      status,
+      amountTotal,
+      amountPaid,
+      refundIssued,
+      receivedBy,
+      bookingSource,
+      paymentMethod,
+      receiptData,
+      receiptName,
+      receiptFiles,
+    } = req.body;
     const dateError = validateBookingDates(checkIn, checkOut, true);
     if (dateError) {
       return res.status(400).json({ error: dateError });
     }
 
+    if (status !== 'Cancelado') {
+      const propertyError = getReservablePropertyError(property_id);
+      if (propertyError) {
+        return res.status(400).json({ error: propertyError });
+      }
+    }
+
     const conflict = findBookingConflict(Number(property_id), checkIn, checkOut, Number(req.params.id));
     if (conflict) {
       return res.status(409).json({
-        error: `Departamento ocupado hasta ${conflict.checkOut}`,
+        error: `Departamento ocupado hasta ${formatDateDisplay(conflict.checkOut)}`,
         conflict,
       });
     }
@@ -563,8 +745,28 @@ app.put('/api/bookings/:id', (req, res) => {
     const money = normalizeBookingMoney(status, amountTotal, amountPaid, refundIssued);
     ensureTenantFromBooking(tenant);
     db.prepare(
-      'UPDATE bookings SET tenant=?, property_id=?, guests=?, checkIn=?, checkOut=?, status=?, amountTotal=?, amountPaid=?, refundIssued=? WHERE id=?'
-    ).run(tenant, property_id, guests, checkIn, checkOut, status, money.total, money.paid, money.refunded ? 1 : 0, req.params.id);
+      `UPDATE bookings
+       SET tenant=?, property_id=?, guests=?, checkIn=?, checkOut=?, status=?, amountTotal=?, amountPaid=?, refundIssued=?,
+           receivedBy=?, bookingSource=?, paymentMethod=?, receiptData=?, receiptName=?, receiptFiles=?
+       WHERE id=?`
+    ).run(
+      tenant,
+      property_id,
+      guests,
+      checkIn,
+      checkOut,
+      status,
+      money.total,
+      money.paid,
+      money.refunded ? 1 : 0,
+      receivedBy || null,
+      bookingSource || null,
+      paymentMethod || null,
+      receiptData || null,
+      receiptName || null,
+      Array.isArray(receiptFiles) ? JSON.stringify(receiptFiles) : receiptFiles || null,
+      req.params.id
+    );
     syncBookingTransactions(Number(req.params.id), {
       tenant,
       property_id,
@@ -651,6 +853,17 @@ app.put('/api/settings/monthly-goal', (req, res) => {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
   }
 });
+
+app.use('/api', (_req, res) => {
+  res.status(404).json({ error: 'API route not found' });
+});
+
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+  app.get('*', (_req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
 
 // Seed database with initial data
 const seedDatabase = () => {

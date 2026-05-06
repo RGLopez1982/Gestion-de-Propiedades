@@ -13,15 +13,52 @@ import { Booking, getBookings } from '../services/api';
 import { useModal } from '../hooks/useModal';
 import { Modal } from '../components/Modal';
 import { BookingForm } from '../components/forms/BookingForm';
+import { BookingTimelineStatus, getBookingTimelineStatus } from '../lib/bookings';
+import { formatDateDisplay } from '../lib/dates';
+import { openStoredFile, parseStoredFiles } from '../lib/files';
 
 const weekdays = ['DOM', 'LUN', 'MAR', 'MIE', 'JUE', 'VIE', 'SAB'];
 
 const toDateKey = (date: Date) => date.toISOString().split('T')[0];
 
-const formatDate = (value?: string) => {
-  if (!value) return '';
-  const [year, month, day] = value.split('-');
-  return `${day}-${month}-${year}`;
+const bookingPillClass = (booking: Booking) => {
+  const status = getBookingTimelineStatus(booking);
+  if (status === 'Finalizada') return 'bg-surface-container text-on-surface-variant border border-outline-variant/30 opacity-70';
+  if (status === 'En curso') return 'bg-primary text-white';
+  if (status === 'Pendiente') return 'bg-tertiary-container/20 text-on-tertiary-container border border-tertiary-container/30';
+  return 'bg-secondary text-white';
+};
+
+const sidebarBookingClass = (status: BookingTimelineStatus) => {
+  if (status === 'Finalizada') return 'border-outline-variant/30 bg-surface-container-low opacity-75';
+  if (status === 'En curso') return 'border-primary/40 bg-primary/5 shadow-sm shadow-primary/10';
+  if (status === 'Pendiente') return 'border-tertiary-container/40 bg-tertiary-container/10';
+  return 'border-secondary/30 bg-white';
+};
+
+const sidebarStatusClass = (status: BookingTimelineStatus) => {
+  if (status === 'Finalizada') return 'bg-surface-container text-on-surface-variant';
+  if (status === 'En curso') return 'bg-primary text-white';
+  if (status === 'Pendiente') return 'bg-tertiary-container/20 text-on-tertiary-container';
+  return 'bg-secondary-container text-on-secondary-container';
+};
+
+const sortSidebarBookings = (items: Booking[]) => {
+  const priority: Record<BookingTimelineStatus, number> = {
+    'En curso': 0,
+    Proxima: 1,
+    Pendiente: 2,
+    Finalizada: 3,
+    Cancelado: 4,
+  };
+
+  return [...items].sort((a, b) => {
+    const aStatus = getBookingTimelineStatus(a);
+    const bStatus = getBookingTimelineStatus(b);
+    if (priority[aStatus] !== priority[bStatus]) return priority[aStatus] - priority[bStatus];
+    if (aStatus === 'Finalizada') return b.checkOut.localeCompare(a.checkOut);
+    return a.checkIn.localeCompare(b.checkIn);
+  });
 };
 
 export default function Calendar() {
@@ -61,7 +98,7 @@ export default function Calendar() {
     });
   }, [bookings, daysInMonth, month, year]);
 
-  const nextBookings = bookings.slice(0, 5);
+  const sidebarBookings = sortSidebarBookings(bookings.filter((booking) => booking.status !== 'Cancelado')).slice(0, 6);
 
   const handleBookingCreated = (booking: Booking) => {
     loadBookings();
@@ -118,8 +155,10 @@ export default function Calendar() {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <div className="w-3 h-3 bg-primary rounded-sm" />
+              <div className="w-3 h-3 bg-secondary rounded-sm" />
               <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">Reservado</span>
+              <div className="w-3 h-3 bg-surface-container border border-outline-variant/30 rounded-sm" />
+              <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">Finalizado</span>
             </div>
           </div>
 
@@ -151,10 +190,10 @@ export default function Calendar() {
                       <button
                         key={booking.id}
                         onClick={() => openEditBooking(booking)}
-                        className="w-full rounded bg-primary px-2 py-1 text-left text-white transition-opacity hover:opacity-90"
+                        className={cn("w-full rounded px-2 py-1 text-left transition-opacity hover:opacity-90", bookingPillClass(booking))}
                       >
                         <p className="text-[9px] font-bold uppercase truncate">{booking.tenant}</p>
-                        <p className="text-[8px] opacity-80 truncate">{booking.property || 'Sin propiedad'}</p>
+                        <p className="text-[8px] opacity-80 truncate">{getBookingTimelineStatus(booking)} - {booking.property || 'Sin propiedad'}</p>
                       </button>
                     ))}
                     {dayBookings.length > 3 && (
@@ -170,12 +209,15 @@ export default function Calendar() {
         <div className="lg:col-span-4 flex flex-col gap-6">
           <div className="bg-white border border-outline-variant/30 rounded-xl p-6 shadow-sm flex flex-col gap-6">
             <h3 className="font-display font-semibold text-primary">Proximas Reservas</h3>
-            {nextBookings.length === 0 ? (
+            {sidebarBookings.length === 0 ? (
               <p className="text-sm text-on-surface-variant">No hay reservas registradas.</p>
             ) : (
               <div className="space-y-4">
-                {nextBookings.map((booking) => (
-                  <div key={booking.id} className="p-3 rounded-xl border border-surface-container">
+                {sidebarBookings.map((booking) => {
+                  const timelineStatus = getBookingTimelineStatus(booking);
+                  const receiptFiles = parseStoredFiles(booking.receiptFiles, booking.receiptData, booking.receiptName);
+                  return (
+                  <div key={booking.id} className={cn("p-3 rounded-xl border transition-colors", sidebarBookingClass(timelineStatus))}>
                     <div className="flex items-center gap-3">
                       <div className="p-2 bg-surface-container rounded-lg shrink-0">
                         <User className="w-4 h-4 text-primary" />
@@ -184,6 +226,9 @@ export default function Calendar() {
                         <p className="text-sm font-bold">{booking.tenant}</p>
                         <p className="text-[10px] text-on-surface-variant">{booking.guests} huespedes</p>
                       </div>
+                      <span className={cn("rounded-full px-2 py-1 text-[9px] font-bold uppercase tracking-tight", sidebarStatusClass(timelineStatus))}>
+                        {timelineStatus}
+                      </span>
                       <button
                         onClick={() => openEditBooking(booking)}
                         className="rounded-lg border border-outline-variant/30 p-2 text-primary hover:bg-surface-container transition-colors"
@@ -199,16 +244,34 @@ export default function Calendar() {
                       </span>
                       <span className="flex items-center gap-2">
                         <CalendarIcon className="w-3.5 h-3.5" />
-                        <span><strong className="text-on-surface">Check-in:</strong> {formatDate(booking.checkIn)}</span>
+                        <span><strong className="text-on-surface">Check-in:</strong> {formatDateDisplay(booking.checkIn)}</span>
                       </span>
                       <span className="flex items-center gap-2">
                         <CalendarIcon className="w-3.5 h-3.5" />
-                        <span><strong className="text-on-surface">Check-out:</strong> {formatDate(booking.checkOut)}</span>
+                        <span><strong className="text-on-surface">Check-out:</strong> {formatDateDisplay(booking.checkOut)}</span>
                       </span>
                       <span className="font-mono">${Number(booking.amountPaid || 0).toFixed(2)} pagado de ${Number(booking.amountTotal || 0).toFixed(2)}</span>
+                      {(booking.receivedBy || booking.bookingSource || booking.paymentMethod) && (
+                        <span>
+                          {[booking.receivedBy && `Recibio: ${booking.receivedBy}`, booking.bookingSource && `Canal: ${booking.bookingSource}`, booking.paymentMethod && `Pago: ${booking.paymentMethod}`]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </span>
+                      )}
+                      {receiptFiles.map((file, index) => (
+                        <button
+                          key={`${file.name}-${index}`}
+                          type="button"
+                          onClick={() => openStoredFile(file.data, file.name || 'comprobante')}
+                          className="text-left font-bold text-primary hover:underline"
+                        >
+                          Comprobante {receiptFiles.length > 1 ? index + 1 : ''}: {file.name || 'Ver archivo'}
+                        </button>
+                      ))}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

@@ -14,6 +14,7 @@ import { cn } from '../lib/utils';
 import { createEvent, deleteEvent, EventItem, getEvents, updateEvent } from '../services/api';
 import { useModal } from '../hooks/useModal';
 import { Modal } from '../components/Modal';
+import { formatDateDisplay } from '../lib/dates';
 
 type ImportedEvent = Pick<EventItem, 'title' | 'description' | 'date' | 'type'>;
 
@@ -240,7 +241,7 @@ export default function Events() {
     setFormData({
       title: event.title,
       description: event.description || '',
-      date: event.date || '',
+      date: formatDateDisplay(event.date || ''),
       type: event.type || 'General',
     });
     modal.open();
@@ -459,7 +460,7 @@ export default function Events() {
                   <div>
                     <h4 className="font-display font-bold text-on-surface group-hover:text-primary transition-colors">{event.title}</h4>
                     <div className="flex flex-wrap items-center gap-3 mt-2 text-outline">
-                      <span className="flex items-center gap-1.5 text-xs font-medium"><Calendar className="w-3 h-3" />{event.date || 'Sin fecha definida'}</span>
+                      <span className="flex items-center gap-1.5 text-xs font-medium"><Calendar className="w-3 h-3" />{formatDateDisplay(event.date || 'Sin fecha definida')}</span>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">

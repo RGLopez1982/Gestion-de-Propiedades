@@ -16,6 +16,7 @@ import { createTransaction, getProperties, getTransactions, Property, Transactio
 import { useModal } from '../hooks/useModal';
 import { Modal } from '../components/Modal';
 import { TransactionForm } from '../components/forms/TransactionForm';
+import { formatDateDisplay } from '../lib/dates';
 
 export default function Finance() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -50,11 +51,6 @@ export default function Finance() {
   const handleTransactionCreated = (transaction: Transaction) => {
     setTransactions(prev => [transaction, ...prev]);
     modal.close();
-  };
-
-  const formatDate = (value: string) => {
-    const [year, month, day] = value.split('-');
-    return day && month && year ? `${day}-${month}-${year}` : value;
   };
 
   const isWithdrawal = (transaction: Transaction) => transaction.concept.toLowerCase().startsWith('cobro de fondos');
@@ -146,7 +142,7 @@ export default function Finance() {
 
       return `
         <tr>
-          <td>${escapeHtml(formatDate(transaction.date))}</td>
+          <td>${escapeHtml(formatDateDisplay(transaction.date))}</td>
           <td>${escapeHtml(transaction.concept)}</td>
           <td>${escapeHtml(transaction.property || 'Sin departamento')}</td>
           <td>${escapeHtml(transaction.type === 'income' ? 'Ingreso' : 'Egreso')}</td>
@@ -191,7 +187,7 @@ export default function Finance() {
         </head>
         <body>
           <h1>Reporte de Finanzas</h1>
-          <p class="meta">Exportado el ${escapeHtml(formatDate(exportDate))}</p>
+          <p class="meta">Exportado el ${escapeHtml(formatDateDisplay(exportDate))}</p>
 
           <table>
             <tbody>
@@ -361,7 +357,7 @@ export default function Finance() {
                   <tbody>
                     {filteredTransactions.slice(0, 15).map((t, idx) => (
                       <tr key={idx} className="zebra-stripe border-b border-surface-container/30 last:border-0 hover:bg-active transition-colors">
-                        <td className="px-6 py-4 text-xs font-mono text-on-surface">{formatDate(t.date)}</td>
+                        <td className="px-6 py-4 text-xs font-mono text-on-surface">{formatDateDisplay(t.date)}</td>
                         <td className="px-6 py-4 text-xs font-bold text-on-surface">{t.concept}</td>
                         <td className="px-6 py-4 text-xs text-outline">{t.property || '-'}</td>
                         <td className={cn("px-6 py-4 text-xs font-bold text-right", t.type === 'income' ? 'text-secondary' : 'text-error')}>

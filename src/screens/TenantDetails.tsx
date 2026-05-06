@@ -11,14 +11,18 @@ import {
   Pencil,
   Phone,
   Tag,
+  Trash2,
   User
 } from 'lucide-react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { cn } from '../lib/utils';
-import { Booking, getTenant, Tenant, Transaction } from '../services/api';
+import { Booking, deleteTenant, getTenant, Tenant, Transaction } from '../services/api';
 import { Modal } from '../components/Modal';
 import { TenantForm } from '../components/forms/TenantForm';
 import { useModal } from '../hooks/useModal';
+import { formatDateDisplay } from '../lib/dates';
+import { openStoredFile, parseStoredFiles } from '../lib/files';
+import { buildReservationWhatsappMessage, getMostRelevantBooking, getPhoneHref, openWhatsappWeb } from '../lib/contact';
 
 export default function TenantDetails() {
   const { id } = useParams();
@@ -44,12 +48,6 @@ export default function TenantDetails() {
     loadTenant();
   }, [id]);
 
-  const formatDate = (value?: string) => {
-    if (!value) return 'Sin fecha';
-    const [year, month, day] = value.split('-');
-    return day && month && year ? `${day}-${month}-${year}` : value;
-  };
-
   const stays = tenant?.stays || [];
   const transactions = tenant?.transactions || [];
   const totalPaid = Number(tenant?.totalPaid || 0);
@@ -63,6 +61,41 @@ export default function TenantDetails() {
   const handleTenantUpdated = (updatedTenant: Tenant) => {
     setTenant((prev) => prev ? { ...prev, ...updatedTenant } : updatedTenant);
     editModal.close();
+  };
+
+  const handleTenantDeleted = async () => {
+    if (!tenant) return;
+
+    const confirmed = window.confirm(`Eliminar a ${tenant.name}? Esta accion no elimina sus reservas historicas.`);
+    if (!confirmed) return;
+
+    try {
+      await deleteTenant(tenant.id);
+      navigate('/tenants');
+    } catch (error) {
+      console.error('Error deleting tenant:', error);
+      window.alert('No se pudo eliminar el huesped. Intentalo nuevamente.');
+    }
+  };
+
+  const handleCallTenant = () => {
+    const phoneHref = getPhoneHref(tenant?.phone);
+    if (!phoneHref) {
+      window.alert('Este huesped no tiene telefono cargado.');
+      return;
+    }
+
+    window.location.href = phoneHref;
+  };
+
+  const handleWhatsappTenant = () => {
+    if (!tenant) return;
+
+    const booking = getMostRelevantBooking(stays);
+    const opened = openWhatsappWeb(tenant.phone, buildReservationWhatsappMessage(tenant, booking));
+    if (!opened) {
+      window.alert('Este huesped no tiene telefono cargado para WhatsApp.');
+    }
   };
 
   if (loading) {
@@ -106,13 +139,22 @@ export default function TenantDetails() {
             </div>
           </div>
         </div>
-        <button
-          onClick={editModal.open}
-          className="bg-primary text-white px-5 py-2.5 rounded-lg font-bold text-sm flex items-center justify-center gap-2 hover:opacity-90 transition-opacity"
-        >
-          <Pencil className="w-4 h-4" />
-          Editar datos
-        </button>
+        <div className="flex flex-col sm:flex-row gap-3">
+          <button
+            onClick={editModal.open}
+            className="bg-primary text-white px-5 py-2.5 rounded-lg font-bold text-sm flex items-center justify-center gap-2 hover:opacity-90 transition-opacity"
+          >
+            <Pencil className="w-4 h-4" />
+            Editar datos
+          </button>
+          <button
+            onClick={handleTenantDeleted}
+            className="border border-error/30 text-error px-5 py-2.5 rounded-lg font-bold text-sm flex items-center justify-center gap-2 hover:bg-error-container/20 transition-colors"
+          >
+            <Trash2 className="w-4 h-4" />
+            Eliminar
+          </button>
+        </div>
       </div>
 
       <Modal isOpen={editModal.isOpen} onClose={editModal.close} title="Editar huesped" size="md">
@@ -150,11 +192,19 @@ export default function TenantDetails() {
             </span>
 
             <div className="flex gap-4 w-full mt-8">
-              <button className="flex-1 bg-primary text-white py-2.5 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-opacity hover:opacity-90">
+              <button
+                type="button"
+                onClick={handleCallTenant}
+                className="flex-1 bg-primary text-white py-2.5 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-opacity hover:opacity-90"
+              >
                 <Phone className="w-4 h-4" />
                 Llamar
               </button>
-              <button className="flex-1 border border-primary text-primary py-2.5 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-colors hover:bg-surface-container">
+              <button
+                type="button"
+                onClick={handleWhatsappTenant}
+                className="flex-1 border border-primary text-primary py-2.5 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-colors hover:bg-surface-container"
+              >
                 <MessageCircle className="w-4 h-4" />
                 WhatsApp
               </button>
@@ -193,7 +243,7 @@ export default function TenantDetails() {
           <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {[
               { label: 'Estadias', value: String(stays.length), detail: `Noches acumuladas: ${totalNights}` },
-              { label: 'Ultima salida', value: formatDate(tenant.lastStay), detail: tenant.property || 'Sin departamento' },
+              { label: 'Ultima salida', value: formatDateDisplay(tenant.lastStay), detail: tenant.property || 'Sin departamento' },
               { label: 'Pagado historico', value: `$${totalPaid.toFixed(2)}`, detail: `${transactions.length} movimiento(s)` },
             ].map((item) => (
               <div key={item.label} className="bg-white border border-outline-variant/30 rounded-xl p-5 shadow-sm">
@@ -218,25 +268,45 @@ export default function TenantDetails() {
                     <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-widest">Check-out</th>
                     <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-widest text-center">Huespedes</th>
                     <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-widest text-right">Pago</th>
+                    <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-widest">Recepcion</th>
                     <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-widest text-center">Estado</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-surface-container/50">
                   {stays.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-6 py-8 text-center text-sm text-on-surface-variant">
+                      <td colSpan={7} className="px-6 py-8 text-center text-sm text-on-surface-variant">
                         No hay reservas registradas para este huesped.
                       </td>
                     </tr>
                   ) : (
-                    stays.map((stay: Booking) => (
+                    stays.map((stay: Booking) => {
+                      const receiptFiles = parseStoredFiles(stay.receiptFiles, stay.receiptData, stay.receiptName);
+                      return (
                       <tr key={stay.id} className="zebra-stripe hover:bg-active transition-colors">
                         <td className="px-6 py-4 text-sm font-bold text-on-surface">{stay.property || '-'}</td>
-                        <td className="px-6 py-4 font-mono text-xs">{formatDate(stay.checkIn)}</td>
-                        <td className="px-6 py-4 font-mono text-xs">{formatDate(stay.checkOut)}</td>
+                        <td className="px-6 py-4 font-mono text-xs">{formatDateDisplay(stay.checkIn)}</td>
+                        <td className="px-6 py-4 font-mono text-xs">{formatDateDisplay(stay.checkOut)}</td>
                         <td className="px-6 py-4 text-center text-sm">{stay.guests}</td>
                         <td className="px-6 py-4 text-right text-sm font-bold">
                           ${Number(stay.amountPaid || 0).toFixed(2)} de ${Number(stay.amountTotal || 0).toFixed(2)}
+                          {stay.paymentMethod && (
+                            <p className="text-[10px] font-normal text-on-surface-variant">{stay.paymentMethod}</p>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 text-xs text-on-surface-variant">
+                          <p>{stay.receivedBy || 'Sin receptor'}</p>
+                          <p>{stay.bookingSource || 'Sin canal'}</p>
+                          {receiptFiles.map((file, index) => (
+                            <button
+                              key={`${file.name}-${index}`}
+                              type="button"
+                              onClick={() => openStoredFile(file.data, file.name || 'comprobante')}
+                              className="block text-left font-bold text-primary hover:underline"
+                            >
+                              Comprobante {receiptFiles.length > 1 ? index + 1 : ''}: {file.name || 'Ver archivo'}
+                            </button>
+                          ))}
                         </td>
                         <td className="px-6 py-4 text-center">
                           <span className="px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-primary-container/10 text-primary">
@@ -244,7 +314,8 @@ export default function TenantDetails() {
                           </span>
                         </td>
                       </tr>
-                    ))
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -276,7 +347,7 @@ export default function TenantDetails() {
                   ) : (
                     transactions.map((transaction: Transaction) => (
                       <tr key={transaction.id} className="zebra-stripe hover:bg-active transition-colors">
-                        <td className="px-6 py-4 font-mono text-xs">{formatDate(transaction.date)}</td>
+                        <td className="px-6 py-4 font-mono text-xs">{formatDateDisplay(transaction.date)}</td>
                         <td className="px-6 py-4 text-sm font-bold text-on-surface">{transaction.concept}</td>
                         <td className="px-6 py-4 text-sm text-on-surface-variant">{transaction.property || '-'}</td>
                         <td className={cn('px-6 py-4 text-right text-sm font-bold', transaction.type === 'income' ? 'text-secondary' : 'text-error')}>

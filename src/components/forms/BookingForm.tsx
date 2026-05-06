@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createBooking, getBookings, getProperties, updateBooking, Booking, Property } from '../../services/api';
+import { formatDateDisplay } from '../../lib/dates';
+import { openStoredFile, parseStoredFiles } from '../../lib/files';
 
 interface BookingFormProps {
   onSuccess: (booking: Booking) => void;
@@ -16,12 +18,6 @@ const dateDiffInNights = (checkIn: string, checkOut: string) => {
 
 const hasDateOverlap = (startA: string, endA: string, startB: string, endB: string) => {
   return startA < endB && endA > startB;
-};
-
-const formatDate = (value?: string) => {
-  if (!value) return '';
-  const [year, month, day] = value.split('-');
-  return `${day}-${month}-${year}`;
 };
 
 const todayKey = new Date().toISOString().split('T')[0];
@@ -41,6 +37,10 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
     amountTotal: String(booking?.amountTotal || booking?.amountPaid || ''),
     amountPaid: String(booking?.amountPaid || ''),
     refundIssued: Boolean(booking?.refundIssued),
+    receivedBy: booking?.receivedBy || '',
+    bookingSource: booking?.bookingSource || '',
+    paymentMethod: booking?.paymentMethod || '',
+    receiptFiles: parseStoredFiles(booking?.receiptFiles, booking?.receiptData, booking?.receiptName),
   });
 
   useEffect(() => {
@@ -58,6 +58,8 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
 
   const selectedGuests = Math.min(Math.max(parseInt(formData.guests) || 1, 1), 4);
   const selectedDates = Boolean(formData.checkIn && formData.checkOut && formData.checkOut > formData.checkIn);
+  const isPropertyReservable = (property: Property) => property.status === 'Disponible';
+  const getPropertyLabel = (property: Property) => property.department || property.location || property.name;
   const getConflictingBooking = (propertyId: number) => {
     if (!selectedDates) return undefined;
     return bookings.find((item) =>
@@ -67,15 +69,26 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
       hasDateOverlap(formData.checkIn, formData.checkOut, item.checkIn, item.checkOut)
     );
   };
-  const filteredProperties = properties.filter((property) =>
-    (property.capacity || 1) >= selectedGuests &&
-    !getConflictingBooking(property.id)
-  );
-  const unavailableByCapacity = properties.filter((property) => (property.capacity || 1) < selectedGuests);
-  const unavailableByDate = properties
-    .map((property) => ({ property, conflict: getConflictingBooking(property.id) }))
-    .filter(({ property, conflict }) => (property.capacity || 1) >= selectedGuests && conflict);
+  const filteredProperties = selectedDates
+    ? properties.filter((property) =>
+      isPropertyReservable(property) &&
+      (property.capacity || 1) >= selectedGuests &&
+      !getConflictingBooking(property.id)
+    )
+    : [];
+  const unavailableByStatus = selectedDates
+    ? properties.filter((property) => !isPropertyReservable(property))
+    : [];
+  const unavailableByCapacity = selectedDates
+    ? properties.filter((property) => (property.capacity || 1) < selectedGuests)
+    : [];
+  const unavailableByDate = selectedDates
+    ? properties
+      .map((property) => ({ property, conflict: getConflictingBooking(property.id) }))
+      .filter(({ property, conflict }) => isPropertyReservable(property) && (property.capacity || 1) >= selectedGuests && conflict)
+    : [];
   const selectedProperty = properties.find((property) => property.id === Number(formData.property_id));
+  const selectedConflict = selectedProperty ? getConflictingBooking(selectedProperty.id) : undefined;
   const nights = dateDiffInNights(formData.checkIn, formData.checkOut);
   const suggestedTotal = useMemo(() => {
     const rate = selectedProperty?.nightlyRate ?? selectedProperty?.monthlyRate ?? 0;
@@ -115,6 +128,44 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
     }));
   };
 
+  const handleReceiptChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []) as File[];
+    if (files.length === 0) return;
+
+    const oversized = files.find((file) => file.size > 2 * 1024 * 1024);
+    if (oversized) {
+      setError(`El comprobante ${oversized.name} supera los 2 MB.`);
+      event.target.value = '';
+      return;
+    }
+
+    const readers = files.map((file) => new Promise<{ name: string; data: string }>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve({ name: file.name, data: String(reader.result) });
+      reader.onerror = () => reject(new Error(`No se pudo leer ${file.name}.`));
+      reader.readAsDataURL(file);
+    }));
+
+    try {
+      const uploadedFiles = await Promise.all(readers);
+      setFormData((prev) => ({
+        ...prev,
+        receiptFiles: [...prev.receiptFiles, ...uploadedFiles],
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'No se pudieron leer los comprobantes.');
+    } finally {
+      event.target.value = '';
+    }
+  };
+
+  const removeReceipt = (index: number) => {
+    setFormData((prev) => ({
+      ...prev,
+      receiptFiles: prev.receiptFiles.filter((_, itemIndex) => itemIndex !== index),
+    }));
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -139,6 +190,18 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
         return;
       }
 
+      if (!selectedProperty || !isPropertyReservable(selectedProperty)) {
+        setError('Ese departamento no esta disponible para reservar. Cambia su estado a Disponible o elige otro.');
+        setLoading(false);
+        return;
+      }
+
+      if (selectedConflict) {
+        setError(`${getPropertyLabel(selectedProperty)} no se puede reservar en esas fechas. Esta ocupado hasta el ${formatDateDisplay(selectedConflict.checkOut)}.`);
+        setLoading(false);
+        return;
+      }
+
       const payload = {
         tenant: formData.tenant,
         property_id: formData.property_id ? parseInt(formData.property_id) : undefined,
@@ -153,6 +216,12 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
           ? parseFloat(formData.amountTotal) || 0
           : parseFloat(formData.amountPaid) || 0,
         refundIssued: formData.status === 'Cancelado' ? formData.refundIssued : false,
+        receivedBy: formData.receivedBy.trim(),
+        bookingSource: formData.bookingSource,
+        paymentMethod: formData.paymentMethod,
+        receiptData: formData.receiptFiles[0]?.data || '',
+        receiptName: formData.receiptFiles[0]?.name || '',
+        receiptFiles: formData.receiptFiles,
       };
       const savedBooking = booking?.id
         ? await updateBooking(booking.id, payload)
@@ -201,46 +270,6 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
         </select>
       </div>
 
-      <div>
-        <label className="block text-sm font-bold text-on-surface mb-1">Departamento *</label>
-        <select
-          name="property_id"
-          value={formData.property_id}
-          onChange={handleChange}
-          required
-          className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
-        >
-          <option value="">Seleccionar departamento</option>
-          {filteredProperties.map(prop => (
-            <option key={prop.id} value={prop.id}>
-              {(prop.department || prop.location || prop.name)} - hasta {prop.capacity || 1} persona{(prop.capacity || 1) > 1 ? 's' : ''}
-            </option>
-          ))}
-        </select>
-        {filteredProperties.length === 0 && (
-          <p className="text-xs text-error mt-1">
-            {selectedDates
-              ? `No hay departamentos disponibles para ${selectedGuests} huespedes en esas fechas.`
-              : 'Selecciona fechas para verificar disponibilidad.'}
-          </p>
-        )}
-        {unavailableByDate.length > 0 && (
-          <div className="mt-2 rounded-lg bg-surface-container-low p-3 text-xs text-on-surface-variant">
-            <p className="font-bold text-on-surface mb-1">Ocupados en esas fechas:</p>
-            {unavailableByDate.slice(0, 3).map(({ property, conflict }) => (
-              <p key={property.id}>
-                {property.department || property.location || property.name}: se desocupa el {formatDate(conflict?.checkOut)}
-              </p>
-            ))}
-          </div>
-        )}
-        {unavailableByCapacity.length > 0 && (
-          <p className="text-xs text-on-surface-variant mt-2">
-            {unavailableByCapacity.length} departamento{unavailableByCapacity.length > 1 ? 's' : ''} no cumple{unavailableByCapacity.length > 1 ? 'n' : ''} con la capacidad solicitada.
-          </p>
-        )}
-      </div>
-
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="block text-sm font-bold text-on-surface mb-1">Check-in *</label>
@@ -267,6 +296,73 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
             className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
           />
         </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-bold text-on-surface mb-1">Departamento *</label>
+        <select
+          name="property_id"
+          value={formData.property_id}
+          onChange={handleChange}
+          required
+          disabled={!selectedDates || filteredProperties.length === 0}
+          className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:bg-surface-container-low disabled:text-on-surface-variant"
+        >
+          <option value="">
+            {selectedDates ? 'Seleccionar departamento disponible' : 'Primero selecciona check-in y check-out'}
+          </option>
+          {filteredProperties.map(prop => (
+            <option key={prop.id} value={prop.id}>
+              {getPropertyLabel(prop)} - hasta {prop.capacity || 1} persona{(prop.capacity || 1) > 1 ? 's' : ''}
+            </option>
+          ))}
+          {unavailableByDate.map(({ property, conflict }) => (
+            <option key={property.id} value={property.id} disabled>
+              {getPropertyLabel(property)} - ocupado hasta {formatDateDisplay(conflict?.checkOut)}
+            </option>
+          ))}
+          {unavailableByStatus.map(prop => (
+            <option key={prop.id} value={prop.id} disabled>
+              {getPropertyLabel(prop)} - no disponible ({prop.status})
+            </option>
+          ))}
+        </select>
+        {!selectedDates && (
+          <p className="text-xs text-on-surface-variant mt-1">
+            Carga las fechas para ver solo los departamentos que se pueden reservar.
+          </p>
+        )}
+        {selectedDates && filteredProperties.length === 0 && (
+          <p className="text-xs text-error mt-1">
+            No hay departamentos disponibles para {selectedGuests} huespedes en esas fechas.
+          </p>
+        )}
+        {unavailableByDate.length > 0 && (
+          <div className="mt-2 rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs text-on-surface-variant">
+            <p className="font-bold text-on-surface mb-1">Ocupados en esas fechas:</p>
+            {unavailableByDate.slice(0, 3).map(({ property, conflict }) => (
+              <p key={property.id}>
+                {getPropertyLabel(property)}: no se puede reservar hasta el checkout del {formatDateDisplay(conflict?.checkOut)}
+                {conflict?.tenant ? ` (${conflict.tenant})` : ''}
+              </p>
+            ))}
+          </div>
+        )}
+        {unavailableByStatus.length > 0 && (
+          <div className="mt-2 rounded-lg bg-surface-container-low p-3 text-xs text-on-surface-variant">
+            <p className="font-bold text-on-surface mb-1">No disponibles por estado:</p>
+            {unavailableByStatus.slice(0, 4).map((property) => (
+              <p key={property.id}>
+                {getPropertyLabel(property)}: {property.status}
+              </p>
+            ))}
+          </div>
+        )}
+        {unavailableByCapacity.length > 0 && (
+          <p className="text-xs text-on-surface-variant mt-2">
+            {unavailableByCapacity.length} departamento{unavailableByCapacity.length > 1 ? 's' : ''} no cumple{unavailableByCapacity.length > 1 ? 'n' : ''} con la capacidad solicitada.
+          </p>
+        )}
       </div>
 
       {suggestedTotal > 0 && (
@@ -351,6 +447,98 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
         </label>
       )}
 
+      <div className="rounded-lg border border-outline-variant/30 p-4 space-y-4">
+        <div>
+          <h3 className="text-sm font-bold text-on-surface">Datos de recepcion y pago</h3>
+          <p className="text-xs text-on-surface-variant mt-1">Informacion interna de como ingreso la reserva.</p>
+        </div>
+
+        <div>
+          <label className="block text-sm font-bold text-on-surface mb-1">Quien recibio la reserva</label>
+          <input
+            type="text"
+            name="receivedBy"
+            value={formData.receivedBy}
+            onChange={handleChange}
+            placeholder="Ej: Rodrigo, Laura, recepcion"
+            className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
+          />
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-bold text-on-surface mb-1">Canal de reserva</label>
+            <select
+              name="bookingSource"
+              value={formData.bookingSource}
+              onChange={handleChange}
+              className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
+            >
+              <option value="">Seleccionar canal</option>
+              <option value="WhatsApp">WhatsApp</option>
+              <option value="Telefono">Telefono</option>
+              <option value="Instagram">Instagram</option>
+              <option value="Airbnb">Airbnb</option>
+              <option value="Booking">Booking</option>
+              <option value="Web">Web</option>
+              <option value="Referido">Referido</option>
+              <option value="Otro">Otro</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-bold text-on-surface mb-1">Medio de pago</label>
+            <select
+              name="paymentMethod"
+              value={formData.paymentMethod}
+              onChange={handleChange}
+              className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
+            >
+              <option value="">Seleccionar medio</option>
+              <option value="Efectivo">Efectivo</option>
+              <option value="Transferencia">Transferencia</option>
+              <option value="Mercado Pago">Mercado Pago</option>
+              <option value="Tarjeta">Tarjeta</option>
+              <option value="Otro">Otro</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm font-bold text-on-surface mb-1">Comprobante</label>
+          <input
+            type="file"
+            accept="image/*,.pdf"
+            multiple
+            onChange={handleReceiptChange}
+            className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
+          />
+          {formData.receiptFiles.length > 0 && (
+            <div className="mt-3 space-y-2">
+              {formData.receiptFiles.map((file, index) => (
+                <div key={`${file.name}-${index}`} className="flex items-center justify-between gap-3 rounded-lg bg-surface-container-low p-3 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => openStoredFile(file.data, file.name || 'comprobante')}
+                    className="min-w-0 truncate font-bold text-primary hover:underline"
+                  >
+                    Comprobante {index + 1}: {file.name || 'Ver archivo cargado'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => removeReceipt(index)}
+                    className="shrink-0 rounded border border-outline-variant/30 px-2 py-1 font-bold text-error hover:bg-error-container/20"
+                  >
+                    Quitar
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="text-[10px] text-on-surface-variant mt-1">Maximo 2 MB. Se guarda junto con la reserva.</p>
+        </div>
+      </div>
+
       <div className="flex gap-3 pt-4 border-t border-outline-variant/20">
         <button
           type="button"
@@ -361,7 +549,7 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
         </button>
         <button
           type="submit"
-          disabled={loading || filteredProperties.length === 0}
+          disabled={loading || filteredProperties.length === 0 || !formData.property_id}
           className="flex-1 px-4 py-2 bg-primary text-white rounded-lg font-bold hover:opacity-90 disabled:opacity-50 transition-all"
         >
           {loading ? 'Guardando...' : booking ? 'Guardar cambios' : 'Crear reserva'}

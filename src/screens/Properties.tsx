@@ -4,7 +4,9 @@ import {
   Filter,
   Building2,
   Users,
-  Pencil
+  Pencil,
+  Search,
+  X
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { getProperties, Property } from '../services/api';
@@ -16,6 +18,13 @@ export default function Properties() {
   const [properties, setProperties] = useState<Property[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedProperty, setSelectedProperty] = useState<Property | null>(null);
+  const [showFilters, setShowFilters] = useState(false);
+  const [filters, setFilters] = useState({
+    search: '',
+    status: 'Todos',
+    capacity: 'Todas',
+    sort: 'department',
+  });
   const modal = useModal();
 
   const loadProperties = async () => {
@@ -83,7 +92,41 @@ export default function Properties() {
     return property.image ? [property.image] : [];
   };
 
-  const summary = properties.slice(0, 3).map((prop) => ({
+  const filteredProperties = properties
+    .filter((prop) => {
+      const query = filters.search.trim().toLowerCase();
+      const searchable = `${prop.name} ${prop.department || ''} ${prop.location || ''}`.toLowerCase();
+      const matchesSearch = !query || searchable.includes(query);
+      const matchesStatus = filters.status === 'Todos' || prop.status === filters.status;
+      const matchesCapacity = filters.capacity === 'Todas' || Number(prop.capacity || 1) >= Number(filters.capacity);
+      return matchesSearch && matchesStatus && matchesCapacity;
+    })
+    .sort((a, b) => {
+      if (filters.sort === 'price') {
+        return (b.nightlyRate ?? b.monthlyRate ?? 0) - (a.nightlyRate ?? a.monthlyRate ?? 0);
+      }
+      if (filters.sort === 'capacity') {
+        return (b.capacity || 1) - (a.capacity || 1);
+      }
+      return (a.department || a.location || a.name).localeCompare(b.department || b.location || b.name);
+    });
+
+  const resetFilters = () => {
+    setFilters({
+      search: '',
+      status: 'Todos',
+      capacity: 'Todas',
+      sort: 'department',
+    });
+  };
+
+  const hasActiveFilters = filters.search.trim() !== ''
+    || filters.status !== 'Todos'
+    || filters.capacity !== 'Todas'
+    || filters.sort !== 'department';
+
+  const summary = filteredProperties.slice(0, 3).map((prop) => ({
+    id: prop.id,
     unit: prop.department || prop.location || prop.name,
     status: prop.status === 'Ocupado' ? 'OCUPADO' : prop.status === 'Disponible' ? 'DISPONIBLE' : 'MANTENIMIENTO',
     statusColor: getStatusColor(prop.status).statusColor,
@@ -99,7 +142,13 @@ export default function Properties() {
           <p className="text-on-surface-variant mt-1">Administra departamentos temporarios, tarifas por noche y capacidad.</p>
         </div>
         <div className="flex gap-3">
-          <button className="bg-white border border-primary text-primary px-5 py-2 rounded-lg font-display font-semibold transition-colors hover:bg-surface-container flex items-center gap-2 text-sm">
+          <button
+            onClick={() => setShowFilters((value) => !value)}
+            className={cn(
+              "bg-white border border-primary text-primary px-5 py-2 rounded-lg font-display font-semibold transition-colors hover:bg-surface-container flex items-center gap-2 text-sm",
+              showFilters && "bg-surface-container"
+            )}
+          >
             <Filter className="w-4 h-4" />
             FILTRAR
           </button>
@@ -126,6 +175,89 @@ export default function Properties() {
         />
       </Modal>
 
+      {showFilters && (
+        <section className="bg-white border border-outline-variant/30 rounded-xl p-4 shadow-sm">
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+            <label className="md:col-span-4 relative">
+              <span className="sr-only">Buscar departamento</span>
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-on-surface-variant" />
+              <input
+                type="search"
+                value={filters.search}
+                onChange={(event) => setFilters((prev) => ({ ...prev, search: event.target.value }))}
+                placeholder="Buscar por nombre o departamento"
+                className="w-full min-h-11 rounded-lg border border-outline-variant/30 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+              />
+            </label>
+
+            <label className="md:col-span-2">
+              <span className="sr-only">Estado</span>
+              <select
+                value={filters.status}
+                onChange={(event) => setFilters((prev) => ({ ...prev, status: event.target.value }))}
+                className="w-full min-h-11 rounded-lg border border-outline-variant/30 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+              >
+                <option value="Todos">Todos los estados</option>
+                <option value="Disponible">Disponible</option>
+                <option value="Ocupado">Ocupado</option>
+                <option value="Mantenimiento">Mantenimiento</option>
+              </select>
+            </label>
+
+            <label className="md:col-span-2">
+              <span className="sr-only">Capacidad minima</span>
+              <select
+                value={filters.capacity}
+                onChange={(event) => setFilters((prev) => ({ ...prev, capacity: event.target.value }))}
+                className="w-full min-h-11 rounded-lg border border-outline-variant/30 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+              >
+                <option value="Todas">Cualquier capacidad</option>
+                <option value="1">1+ persona</option>
+                <option value="2">2+ personas</option>
+                <option value="3">3+ personas</option>
+                <option value="4">4 personas</option>
+              </select>
+            </label>
+
+            <label className="md:col-span-3">
+              <span className="sr-only">Ordenar</span>
+              <select
+                value={filters.sort}
+                onChange={(event) => setFilters((prev) => ({ ...prev, sort: event.target.value }))}
+                className="w-full min-h-11 rounded-lg border border-outline-variant/30 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+              >
+                <option value="department">Ordenar por departamento</option>
+                <option value="price">Mayor precio por noche</option>
+                <option value="capacity">Mayor capacidad</option>
+              </select>
+            </label>
+
+            <div className="md:col-span-1 flex gap-2">
+              {hasActiveFilters && (
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  className="min-h-11 rounded-lg border border-outline-variant/30 px-3 text-xs font-bold uppercase text-primary hover:bg-surface-container transition-colors"
+                >
+                  Limpiar
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setShowFilters(false)}
+                className="min-h-11 flex-1 rounded-lg border border-outline-variant/30 text-primary hover:bg-surface-container transition-colors flex items-center justify-center"
+                aria-label="Cerrar filtros"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+          <p className="mt-3 text-xs text-on-surface-variant">
+            Mostrando {filteredProperties.length} de {properties.length} departamentos.
+          </p>
+        </section>
+      )}
+
       <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
         {loading ? (
           <div className="col-span-full flex justify-center items-center h-64">
@@ -135,8 +267,12 @@ export default function Properties() {
           <div className="col-span-full text-center py-12">
             <p className="text-on-surface-variant">No hay departamentos registrados</p>
           </div>
+        ) : filteredProperties.length === 0 ? (
+          <div className="col-span-full text-center py-12">
+            <p className="text-on-surface-variant">No hay departamentos que coincidan con los filtros</p>
+          </div>
         ) : (
-          properties.map((prop) => {
+          filteredProperties.map((prop) => {
             const { statusColor, indicatorColor } = getStatusColor(prop.status);
             const images = getPropertyImages(prop);
             const coverImage = images[0] || prop.image || 'https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?auto=format&fit=crop&q=80&w=600';
@@ -216,8 +352,8 @@ export default function Properties() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-surface-container/50">
-                {summary.map((row, idx) => (
-                  <tr key={idx} className="hover:bg-active transition-colors">
+                {summary.map((row) => (
+                  <tr key={row.id} className="hover:bg-active transition-colors">
                     <td className="px-6 py-4 font-bold text-sm">{row.unit}</td>
                     <td className="px-6 py-4">
                       <span className={cn("px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase", row.statusColor)}>
@@ -228,7 +364,10 @@ export default function Properties() {
                     <td className="px-6 py-4 text-right font-mono font-bold text-primary">{row.nightly}</td>
                     <td className="px-6 py-4 text-right">
                       <button
-                        onClick={() => openEditProperty(properties[idx])}
+                        onClick={() => {
+                          const property = filteredProperties.find((item) => item.id === row.id);
+                          if (property) openEditProperty(property);
+                        }}
                         className="text-primary text-[10px] font-bold uppercase hover:underline"
                       >
                         Editar

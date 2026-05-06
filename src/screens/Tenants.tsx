@@ -11,14 +11,17 @@ import {
   Search,
   Tag,
   TrendingUp,
+  Trash2,
   UserPlus
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { cn } from '../lib/utils';
-import { getTenants, Tenant } from '../services/api';
+import { deleteTenant, getTenant, getTenants, Tenant } from '../services/api';
 import { useModal } from '../hooks/useModal';
 import { Modal } from '../components/Modal';
 import { TenantForm } from '../components/forms/TenantForm';
+import { formatDateDisplay } from '../lib/dates';
+import { buildReservationWhatsappMessage, getMostRelevantBooking, getPhoneHref, openWhatsappWeb } from '../lib/contact';
 
 export default function Tenants() {
   const [tenants, setTenants] = useState<Tenant[]>([]);
@@ -67,19 +70,68 @@ export default function Tenants() {
 
   const openEditModal = (event: React.MouseEvent, tenant: Tenant) => {
     event.preventDefault();
+    event.stopPropagation();
     setEditingTenant(tenant);
     modal.open();
+  };
+
+  const handleDeleteTenant = async (event: React.MouseEvent, tenant: Tenant) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const confirmed = window.confirm(`Eliminar a ${tenant.name}? Esta accion no elimina sus reservas historicas.`);
+    if (!confirmed) return;
+
+    try {
+      await deleteTenant(tenant.id);
+      setTenants((prev) => prev.filter((item) => item.id !== tenant.id));
+    } catch (error) {
+      console.error('Error deleting tenant:', error);
+      window.alert('No se pudo eliminar el huesped. Intentalo nuevamente.');
+    }
+  };
+
+  const handleCallTenant = (event: React.MouseEvent, tenant: Tenant) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const phoneHref = getPhoneHref(tenant.phone);
+    if (!phoneHref) {
+      window.alert('Este huesped no tiene telefono cargado.');
+      return;
+    }
+
+    window.location.href = phoneHref;
+  };
+
+  const handleWhatsappTenant = async (event: React.MouseEvent, tenant: Tenant) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (!tenant.phone) {
+      window.alert('Este huesped no tiene telefono cargado para WhatsApp.');
+      return;
+    }
+
+    try {
+      const tenantDetails = await getTenant(tenant.id);
+      const booking = getMostRelevantBooking(tenantDetails.stays || []);
+      const opened = openWhatsappWeb(tenantDetails.phone, buildReservationWhatsappMessage(tenantDetails, booking));
+      if (!opened) {
+        window.alert('Este huesped no tiene telefono cargado para WhatsApp.');
+      }
+    } catch (error) {
+      console.error('Error loading tenant reservation for WhatsApp:', error);
+      const opened = openWhatsappWeb(tenant.phone, buildReservationWhatsappMessage(tenant));
+      if (!opened) {
+        window.alert('No se pudo abrir WhatsApp. Revisa el telefono del huesped.');
+      }
+    }
   };
 
   const closeModal = () => {
     setEditingTenant(null);
     modal.close();
-  };
-
-  const formatDate = (value?: string) => {
-    if (!value) return 'Sin fecha';
-    const [year, month, day] = value.split('-');
-    return day && month && year ? `${day}-${month}-${year}` : value;
   };
 
   const filteredTenants = tenants.filter((tenant) => {
@@ -173,13 +225,24 @@ export default function Tenants() {
                     </span>
                   </div>
                 </div>
-                <button
-                  onClick={(event) => openEditModal(event, tenant)}
-                  className="p-2 hover:bg-surface-container rounded-lg text-outline hover:text-primary transition-colors"
-                  title="Editar huesped"
-                >
-                  <Pencil className="w-4 h-4" />
-                </button>
+                <div className="flex gap-1">
+                  <button
+                    onClick={(event) => openEditModal(event, tenant)}
+                    className="p-2 hover:bg-surface-container rounded-lg text-outline hover:text-primary transition-colors"
+                    title="Editar huesped"
+                    aria-label="Editar huesped"
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={(event) => handleDeleteTenant(event, tenant)}
+                    className="p-2 hover:bg-error-container/20 rounded-lg text-outline hover:text-error transition-colors"
+                    title="Eliminar huesped"
+                    aria-label="Eliminar huesped"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
 
               <div className="mt-6 space-y-3">
@@ -191,8 +254,8 @@ export default function Tenants() {
                   <CalendarDays className="w-3.5 h-3.5" />
                   <span className="text-xs font-medium">
                     {Number(tenant.staysCount) > 0
-                      ? `${tenant.staysCount} estadia(s) - ultima salida ${formatDate(tenant.lastStay)}`
-                      : `Contacto desde ${formatDate(tenant.since)}`}
+                      ? `${tenant.staysCount} estadia(s) - ultima salida ${formatDateDisplay(tenant.lastStay)}`
+                      : `Contacto desde ${formatDateDisplay(tenant.since)}`}
                   </span>
                 </div>
                 <div className="flex items-center gap-2 text-on-surface-variant">
@@ -219,10 +282,22 @@ export default function Tenants() {
               </div>
 
               <div className="flex gap-2 mt-6 pt-6 border-t border-surface-container">
-                <button className="p-2 border border-outline-variant/30 rounded-lg text-primary hover:bg-surface-container transition-colors grow flex justify-center">
+                <button
+                  type="button"
+                  onClick={(event) => handleCallTenant(event, tenant)}
+                  className="p-2 border border-outline-variant/30 rounded-lg text-primary hover:bg-surface-container transition-colors grow flex justify-center"
+                  aria-label={`Llamar a ${tenant.name}`}
+                  title="Llamar"
+                >
                   <Phone className="w-4 h-4" />
                 </button>
-                <button className="p-2 border border-outline-variant/30 rounded-lg text-primary hover:bg-surface-container transition-colors grow flex justify-center">
+                <button
+                  type="button"
+                  onClick={(event) => handleWhatsappTenant(event, tenant)}
+                  className="p-2 border border-outline-variant/30 rounded-lg text-primary hover:bg-surface-container transition-colors grow flex justify-center"
+                  aria-label={`Enviar WhatsApp a ${tenant.name}`}
+                  title="WhatsApp"
+                >
                   <MessageCircle className="w-4 h-4" />
                 </button>
                 <div className="p-2 bg-primary text-white rounded-lg transition-colors group-hover:rotate-45 transition-transform flex justify-center items-center">
