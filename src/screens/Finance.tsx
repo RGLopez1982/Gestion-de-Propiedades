@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { 
+import {
   TrendingUp, 
   Download, 
   Plus, 
@@ -12,7 +12,7 @@ import {
   Banknote
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { createTransaction, getProperties, getTransactions, Property, Transaction } from '../services/api';
+import { Booking, createTransaction, getBookings, getProperties, getTransactions, Property, Transaction } from '../services/api';
 import { useModal } from '../hooks/useModal';
 import { Modal } from '../components/Modal';
 import { TransactionForm } from '../components/forms/TransactionForm';
@@ -20,6 +20,7 @@ import { formatDateDisplay } from '../lib/dates';
 
 export default function Finance() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [bookings, setBookings] = useState<Booking[]>([]);
   const [properties, setProperties] = useState<Property[]>([]);
   const [periodFilter, setPeriodFilter] = useState('cycle');
   const [propertyFilter, setPropertyFilter] = useState('all');
@@ -28,12 +29,14 @@ export default function Finance() {
 
   const loadData = async () => {
     try {
-      const [transactionData, propertyData] = await Promise.all([
+      const [transactionData, propertyData, bookingData] = await Promise.all([
         getTransactions(),
         getProperties(),
+        getBookings(),
       ]);
       setTransactions(transactionData);
       setProperties(propertyData);
+      setBookings(bookingData);
     } catch (error) {
       console.error('Error loading finance data:', error);
     }
@@ -54,9 +57,28 @@ export default function Finance() {
   };
 
   const isWithdrawal = (transaction: Transaction) => transaction.concept.toLowerCase().startsWith('cobro de fondos');
+  const bookingPaymentTransactions: Transaction[] = bookings
+    .filter((booking) => Number(booking.amountPaid || 0) > 0)
+    .filter((booking) => !transactions.some((transaction) => Number(transaction.booking_id) === booking.id))
+    .map((booking) => ({
+      id: -booking.id,
+      date: booking.createdAt?.slice(0, 10) || booking.checkIn,
+      concept: booking.status === 'Pendiente'
+        ? `Pago parcial reserva - ${booking.tenant}`
+        : booking.status === 'Cancelado'
+          ? `Pago reserva cancelada - ${booking.tenant}`
+          : `Reserva confirmada - ${booking.tenant}`,
+      property_id: booking.property_id,
+      booking_id: booking.id,
+      amount: Number(booking.amountPaid || 0),
+      status: 'Completado',
+      type: 'income',
+      property: booking.property,
+    }));
+  const financeTransactions = [...transactions, ...bookingPaymentTransactions];
 
   const getTransactionOrder = (transaction: Transaction) => Number(transaction.id || 0);
-  const withdrawalTransactions = transactions
+  const withdrawalTransactions = financeTransactions
     .filter(isWithdrawal)
     .sort((a, b) => getTransactionOrder(b) - getTransactionOrder(a));
   const lastWithdrawal = withdrawalTransactions[0];
@@ -64,7 +86,7 @@ export default function Finance() {
     if (!lastWithdrawal) return true;
     return getTransactionOrder(transaction) > getTransactionOrder(lastWithdrawal);
   };
-  const currentCycleTransactions = transactions.filter((transaction) => isCurrentCycleTransaction(transaction) && !isWithdrawal(transaction));
+  const currentCycleTransactions = financeTransactions.filter((transaction) => isCurrentCycleTransaction(transaction) && !isWithdrawal(transaction));
   const currentCycleIncome = currentCycleTransactions
     .filter(t => t.type === 'income')
     .reduce((sum, t) => sum + t.amount, 0);
@@ -73,7 +95,7 @@ export default function Finance() {
     .reduce((sum, t) => sum + Math.abs(t.amount), 0);
   const currentCycleBalance = currentCycleIncome - currentCycleExpense;
   const currentMonth = new Date().toISOString().slice(0, 7);
-  const filteredTransactions = transactions.filter((transaction) => {
+  const filteredTransactions = financeTransactions.filter((transaction) => {
     const matchesPeriod = periodFilter === 'all'
       || (periodFilter === 'cycle' ? isCurrentCycleTransaction(transaction) && !isWithdrawal(transaction) : transaction.date.startsWith(periodFilter));
     const matchesProperty = propertyFilter === 'all' || String(transaction.property_id || '') === propertyFilter;
@@ -455,7 +477,7 @@ export default function Finance() {
               <div>
                 <h4 className="font-bold text-xs text-primary mb-1">Smart Tip</h4>
                 <p className="text-xs text-on-surface-variant leading-relaxed">
-                  {transactions.length === 0 ? 'Todavia no hay datos suficientes para generar sugerencias.' : 'Revisa los movimientos recientes para detectar oportunidades de ahorro.'}
+                  {financeTransactions.length === 0 ? 'Todavia no hay datos suficientes para generar sugerencias.' : 'Revisa los movimientos recientes para detectar oportunidades de ahorro.'}
                 </p>
               </div>
             </div>
