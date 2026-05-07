@@ -262,6 +262,22 @@ const syncBookingTransactions = async (
 
 app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
 
+app.get('/api/db-check', async (_req, res) => {
+  try {
+    const result = await one<{ ok: number }>('SELECT 1 as ok');
+    const tables = await q<{ table_name: string }>(`
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = 'public'
+        AND table_name IN ('properties', 'tenants', 'transactions', 'bookings', 'events', 'settings')
+      ORDER BY table_name
+    `);
+    res.json({ ok: result?.ok === 1, tables: tables.map((item) => item.table_name) });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
 app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body || {};
   if (username !== AUTH_USER || password !== AUTH_PASSWORD) {

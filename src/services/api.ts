@@ -2,6 +2,11 @@
 
 const API_BASE = '/api';
 
+const getApiError = async (res: Response, fallback: string) => {
+  const data = await res.json().catch(() => null);
+  return data?.error || `${fallback} (${res.status})`;
+};
+
 export const getSession = async (): Promise<{ authenticated: boolean }> => {
   const res = await fetch(`${API_BASE}/auth/me`);
   if (!res.ok) return { authenticated: false };
@@ -16,12 +21,8 @@ export const login = async (username: string, password: string): Promise<void> =
       body: JSON.stringify({ username, password }),
     });
 
-    if (!res.ok) {
-      const contentType = res.headers.get('content-type') || '';
-      const data = contentType.includes('application/json')
-        ? await res.json().catch(() => null)
-        : null;
-      throw new Error(data?.error || `No se pudo iniciar sesion (${res.status})`);
+  if (!res.ok) {
+      throw new Error(await getApiError(res, 'No se pudo iniciar sesion'));
     }
   } catch (error) {
     if (error instanceof Error) throw error;
@@ -139,7 +140,7 @@ export const createProperty = async (property: Omit<Property, 'id' | 'createdAt'
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(property),
   });
-  if (!res.ok) throw new Error('Failed to create property');
+  if (!res.ok) throw new Error(await getApiError(res, 'Failed to create property'));
   return res.json();
 };
 
@@ -149,13 +150,13 @@ export const updateProperty = async (id: number, property: Partial<Property>): P
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(property),
   });
-  if (!res.ok) throw new Error('Failed to update property');
+  if (!res.ok) throw new Error(await getApiError(res, 'Failed to update property'));
   return res.json();
 };
 
 export const deleteProperty = async (id: number): Promise<void> => {
   const res = await fetch(`${API_BASE}/properties/${id}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error('Failed to delete property');
+  if (!res.ok) throw new Error(await getApiError(res, 'Failed to delete property'));
 };
 
 // Tenants
@@ -177,7 +178,7 @@ export const createTenant = async (tenant: Omit<Tenant, 'id' | 'createdAt'>): Pr
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(tenant),
   });
-  if (!res.ok) throw new Error('Failed to create tenant');
+  if (!res.ok) throw new Error(await getApiError(res, 'Failed to create tenant'));
   return res.json();
 };
 
@@ -187,13 +188,13 @@ export const updateTenant = async (id: number, tenant: Partial<Tenant>): Promise
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(tenant),
   });
-  if (!res.ok) throw new Error('Failed to update tenant');
+  if (!res.ok) throw new Error(await getApiError(res, 'Failed to update tenant'));
   return res.json();
 };
 
 export const deleteTenant = async (id: number): Promise<void> => {
   const res = await fetch(`${API_BASE}/tenants/${id}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error('Failed to delete tenant');
+  if (!res.ok) throw new Error(await getApiError(res, 'Failed to delete tenant'));
 };
 
 // Transactions
@@ -209,7 +210,7 @@ export const createTransaction = async (transaction: Omit<Transaction, 'id' | 'c
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(transaction),
   });
-  if (!res.ok) throw new Error('Failed to create transaction');
+  if (!res.ok) throw new Error(await getApiError(res, 'Failed to create transaction'));
   return res.json();
 };
 
@@ -227,8 +228,7 @@ export const createBooking = async (booking: Omit<Booking, 'id' | 'createdAt'>):
     body: JSON.stringify(booking),
   });
   if (!res.ok) {
-    const data = await res.json().catch(() => null);
-    throw new Error(data?.error || 'Failed to create booking');
+    throw new Error(await getApiError(res, 'Failed to create booking'));
   }
   return res.json();
 };
@@ -240,8 +240,7 @@ export const updateBooking = async (id: number, booking: Omit<Booking, 'id' | 'c
     body: JSON.stringify(booking),
   });
   if (!res.ok) {
-    const data = await res.json().catch(() => null);
-    throw new Error(data?.error || 'Failed to update booking');
+    throw new Error(await getApiError(res, 'Failed to update booking'));
   }
   return res.json();
 };
@@ -259,7 +258,7 @@ export const createEvent = async (event: Omit<EventItem, 'id' | 'createdAt'>): P
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(event),
   });
-  if (!res.ok) throw new Error('Failed to create event');
+  if (!res.ok) throw new Error(await getApiError(res, 'Failed to create event'));
   return res.json();
 };
 
@@ -269,13 +268,13 @@ export const updateEvent = async (id: number, event: Partial<EventItem>): Promis
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(event),
   });
-  if (!res.ok) throw new Error('Failed to update event');
+  if (!res.ok) throw new Error(await getApiError(res, 'Failed to update event'));
   return res.json();
 };
 
 export const deleteEvent = async (id: number): Promise<void> => {
   const res = await fetch(`${API_BASE}/events/${id}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error('Failed to delete event');
+  if (!res.ok) throw new Error(await getApiError(res, 'Failed to delete event'));
 };
 
 // Settings
@@ -292,7 +291,7 @@ export const updateMonthlyGoal = async (monthlyGoal: number): Promise<number> =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ monthlyGoal }),
   });
-  if (!res.ok) throw new Error('Failed to update monthly goal');
+  if (!res.ok) throw new Error(await getApiError(res, 'Failed to update monthly goal'));
   const data = await res.json();
   return data.monthlyGoal;
 };
