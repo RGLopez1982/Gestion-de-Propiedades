@@ -21,7 +21,7 @@ import { formatDateDisplay } from '../lib/dates';
 export default function Finance() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [properties, setProperties] = useState<Property[]>([]);
-  const [periodFilter, setPeriodFilter] = useState('all');
+  const [periodFilter, setPeriodFilter] = useState('cycle');
   const [propertyFilter, setPropertyFilter] = useState('all');
   const [loading, setLoading] = useState(true);
   const modal = useModal();
@@ -55,9 +55,27 @@ export default function Finance() {
 
   const isWithdrawal = (transaction: Transaction) => transaction.concept.toLowerCase().startsWith('cobro de fondos');
 
+  const getTransactionOrder = (transaction: Transaction) => Number(transaction.id || 0);
+  const withdrawalTransactions = transactions
+    .filter(isWithdrawal)
+    .sort((a, b) => getTransactionOrder(b) - getTransactionOrder(a));
+  const lastWithdrawal = withdrawalTransactions[0];
+  const isCurrentCycleTransaction = (transaction: Transaction) => {
+    if (!lastWithdrawal) return true;
+    return getTransactionOrder(transaction) > getTransactionOrder(lastWithdrawal);
+  };
+  const currentCycleTransactions = transactions.filter((transaction) => isCurrentCycleTransaction(transaction) && !isWithdrawal(transaction));
+  const currentCycleIncome = currentCycleTransactions
+    .filter(t => t.type === 'income')
+    .reduce((sum, t) => sum + t.amount, 0);
+  const currentCycleExpense = currentCycleTransactions
+    .filter(t => t.type === 'expense')
+    .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+  const currentCycleBalance = currentCycleIncome - currentCycleExpense;
   const currentMonth = new Date().toISOString().slice(0, 7);
   const filteredTransactions = transactions.filter((transaction) => {
-    const matchesPeriod = periodFilter === 'all' || transaction.date.startsWith(periodFilter);
+    const matchesPeriod = periodFilter === 'all'
+      || (periodFilter === 'cycle' ? isCurrentCycleTransaction(transaction) && !isWithdrawal(transaction) : transaction.date.startsWith(periodFilter));
     const matchesProperty = propertyFilter === 'all' || String(transaction.property_id || '') === propertyFilter;
     return matchesPeriod && matchesProperty;
   });
@@ -80,19 +98,15 @@ export default function Finance() {
     .reduce((sum, t) => sum + Math.abs(t.amount), 0);
   
   const balance = totalIncome - totalExpense;
-  const withdrawableBalance = transactions.reduce((sum, transaction) => {
-    return transaction.type === 'income'
-      ? sum + transaction.amount
-      : sum - Math.abs(transaction.amount);
-  }, 0);
+  const withdrawableBalance = currentCycleBalance;
 
   const operationalExpenses = filteredTransactions.filter((transaction) => transaction.type === 'expense' && !isWithdrawal(transaction));
   const totalOperationalExpenses = operationalExpenses.reduce((sum, transaction) => sum + Math.abs(transaction.amount), 0);
 
   const summaries = [
-    { label: 'Balance Filtrado', value: `$${balance.toFixed(2)}`, trend: filteredTransactions.length > 0 ? 'Datos reales' : 'Sin movimientos', icon: TrendingUp, color: 'text-primary' },
-    { label: 'Ingresos', value: `$${totalIncome.toFixed(2)}`, sub: `${filteredTransactions.filter(t => t.type === 'income').length} ingresos registrados`, icon: ArrowUpRight, color: 'text-secondary' },
-    { label: 'Egresos', value: `-$${Math.abs(totalExpense).toFixed(2)}`, sub: `${filteredTransactions.filter(t => t.type === 'expense').length} egresos registrados`, icon: ArrowDownRight, color: 'text-error' },
+    { label: periodFilter === 'cycle' ? 'Balance del ciclo' : 'Balance filtrado', value: `$${balance.toFixed(2)}`, trend: filteredTransactions.length > 0 ? 'Datos reales' : 'Sin movimientos', icon: TrendingUp, color: 'text-primary' },
+    { label: periodFilter === 'cycle' ? 'Ingresos del ciclo' : 'Ingresos filtrados', value: `$${totalIncome.toFixed(2)}`, sub: `${filteredTransactions.filter(t => t.type === 'income').length} ingresos registrados`, icon: ArrowUpRight, color: 'text-secondary' },
+    { label: periodFilter === 'cycle' ? 'Egresos del ciclo' : 'Egresos filtrados', value: `-$${Math.abs(totalExpense).toFixed(2)}`, sub: `${filteredTransactions.filter(t => t.type === 'expense').length} egresos registrados`, icon: ArrowDownRight, color: 'text-error' },
   ];
 
   const distributions = operationalExpenses.length > 0
@@ -105,7 +119,7 @@ export default function Finance() {
     try {
       const transaction = await createTransaction({
         date: new Date().toISOString().split('T')[0],
-        concept: 'Cobro de fondos',
+        concept: 'Cobro de fondos - cierre de ciclo',
         amount: withdrawableBalance,
         status: 'Completado',
         type: 'expense',
@@ -124,7 +138,11 @@ export default function Finance() {
       .replaceAll('"', '&quot;');
 
     const exportDate = new Date().toISOString().split('T')[0];
-    const periodLabel = periodFilter === 'all' ? 'Todos los periodos' : `Mes ${periodFilter}`;
+    const periodLabel = periodFilter === 'all'
+      ? 'Todos los periodos'
+      : periodFilter === 'cycle'
+        ? 'Ciclo actual'
+        : `Mes ${periodFilter}`;
     const propertyLabel = propertyFilter === 'all'
       ? 'Todos los departamentos'
       : properties.find((property) => String(property.id) === propertyFilter)?.department || 'Departamento filtrado';
@@ -272,8 +290,9 @@ export default function Finance() {
               onChange={(event) => setPeriodFilter(event.target.value)}
               className="appearance-none bg-white border border-outline-variant/30 pl-4 pr-10 py-2 rounded-lg text-sm font-bold text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20 cursor-pointer min-w-[160px]"
             >
-              <option value="all">Todos los periodos</option>
+              <option value="cycle">Ciclo actual</option>
               <option value={currentMonth}>Mes actual</option>
+              <option value="all">Todos los periodos</option>
             </select>
             <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-outline pointer-events-none group-hover:text-primary transition-colors" />
           </div>
@@ -412,7 +431,7 @@ export default function Finance() {
           <div className="bg-primary text-white rounded-xl p-6 relative overflow-hidden shadow-lg group">
             <div className="relative z-10">
               <h3 className="text-sm font-bold opacity-70 mb-1">Saldo Disponible</h3>
-              <p className="text-[10px] opacity-60 mb-6 uppercase tracking-wider">Ingresos menos egresos registrados</p>
+              <p className="text-[10px] opacity-60 mb-6 uppercase tracking-wider">Ciclo actual desde el ultimo cobro</p>
               <h2 className="font-display text-4xl font-bold mb-8">${Math.max(withdrawableBalance, 0).toFixed(2)}</h2>
               <button
                 onClick={handleWithdraw}
