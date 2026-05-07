@@ -2,6 +2,8 @@
 
 La app queda publicada como un unico servicio web: Express sirve la API (`/api`) y tambien el frontend compilado de React (`dist`).
 
+Para una opcion gratis con Vercel + Supabase, usa `DEPLOY_VERCEL_SUPABASE.md`.
+
 ## Opcion recomendada: Render
 
 El repo incluye `render.yaml`, que crea un Web Service con Node, disco persistente y las variables necesarias.
