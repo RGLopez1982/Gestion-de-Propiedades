@@ -1,6 +1,7 @@
 // API Service for property management
 
 const API_BASE = '/api';
+const SESSION_TOKEN_KEY = 'gp_session_token';
 
 const getApiError = async (res: Response, fallback: string) => {
   const data = await res.json().catch(() => null);
@@ -8,8 +9,13 @@ const getApiError = async (res: Response, fallback: string) => {
 };
 
 const apiFetch = (input: RequestInfo | URL, init: RequestInit = {}) => {
+  const token = localStorage.getItem(SESSION_TOKEN_KEY);
+  const headers = new Headers(init.headers);
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+
   return fetch(input, {
     ...init,
+    headers,
     credentials: 'include',
   });
 };
@@ -31,6 +37,11 @@ export const login = async (username: string, password: string): Promise<void> =
   if (!res.ok) {
       throw new Error(await getApiError(res, 'No se pudo iniciar sesion'));
     }
+
+    const data = await res.json().catch(() => null);
+    if (data?.token) {
+      localStorage.setItem(SESSION_TOKEN_KEY, data.token);
+    }
   } catch (error) {
     if (error instanceof Error) throw error;
     throw new Error('No se pudo conectar con el servidor de login');
@@ -39,6 +50,7 @@ export const login = async (username: string, password: string): Promise<void> =
 
 export const logout = async (): Promise<void> => {
   await apiFetch(`${API_BASE}/auth/logout`, { method: 'POST' });
+  localStorage.removeItem(SESSION_TOKEN_KEY);
 };
 
 export interface Property {

@@ -78,8 +78,9 @@ app.post('/api/auth/login', (req, res) => {
     return res.status(401).json({ error: 'Usuario o contrasena incorrectos' });
   }
 
-  setSessionCookie(res, createSessionToken(username));
-  res.json({ authenticated: true, username });
+  const token = createSessionToken(username);
+  setSessionCookie(res, token);
+  res.json({ authenticated: true, username, token });
 });
 
 app.post('/api/auth/logout', (_req, res) => {
@@ -89,12 +90,16 @@ app.post('/api/auth/logout', (_req, res) => {
 
 app.get('/api/auth/me', (req, res) => {
   const cookies = parseCookies(req.headers.cookie);
-  res.json({ authenticated: verifySessionToken(cookies.gp_session) });
+  const authHeader = req.headers.authorization || '';
+  const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
+  res.json({ authenticated: verifySessionToken(cookies.gp_session) || verifySessionToken(bearerToken) });
 });
 
 app.use('/api', (req, res, next) => {
   const cookies = parseCookies(req.headers.cookie);
-  if (!verifySessionToken(cookies.gp_session)) {
+  const authHeader = req.headers.authorization || '';
+  const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
+  if (!verifySessionToken(cookies.gp_session) && !verifySessionToken(bearerToken)) {
     return res.status(401).json({ error: 'Sesion no autorizada' });
   }
   next();
