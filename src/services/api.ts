@@ -7,15 +7,22 @@ const getApiError = async (res: Response, fallback: string) => {
   return data?.error || `${fallback} (${res.status})`;
 };
 
+const apiFetch = (input: RequestInfo | URL, init: RequestInit = {}) => {
+  return fetch(input, {
+    ...init,
+    credentials: 'include',
+  });
+};
+
 export const getSession = async (): Promise<{ authenticated: boolean }> => {
-  const res = await fetch(`${API_BASE}/auth/me`);
+  const res = await apiFetch(`${API_BASE}/auth/me`);
   if (!res.ok) return { authenticated: false };
   return res.json();
 };
 
 export const login = async (username: string, password: string): Promise<void> => {
   try {
-    const res = await fetch(`${API_BASE}/auth/login`, {
+    const res = await apiFetch(`${API_BASE}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
@@ -31,7 +38,7 @@ export const login = async (username: string, password: string): Promise<void> =
 };
 
 export const logout = async (): Promise<void> => {
-  await fetch(`${API_BASE}/auth/logout`, { method: 'POST' });
+  await apiFetch(`${API_BASE}/auth/logout`, { method: 'POST' });
 };
 
 export interface Property {
@@ -123,19 +130,19 @@ export interface EventItem {
 
 // Properties
 export const getProperties = async (): Promise<Property[]> => {
-  const res = await fetch(`${API_BASE}/properties`);
+  const res = await apiFetch(`${API_BASE}/properties`);
   if (!res.ok) throw new Error('Failed to fetch properties');
   return res.json();
 };
 
 export const getProperty = async (id: number): Promise<Property> => {
-  const res = await fetch(`${API_BASE}/properties/${id}`);
+  const res = await apiFetch(`${API_BASE}/properties/${id}`);
   if (!res.ok) throw new Error('Failed to fetch property');
   return res.json();
 };
 
 export const createProperty = async (property: Omit<Property, 'id' | 'createdAt'>): Promise<Property> => {
-  const res = await fetch(`${API_BASE}/properties`, {
+  const res = await apiFetch(`${API_BASE}/properties`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(property),
@@ -145,7 +152,7 @@ export const createProperty = async (property: Omit<Property, 'id' | 'createdAt'
 };
 
 export const updateProperty = async (id: number, property: Partial<Property>): Promise<Property> => {
-  const res = await fetch(`${API_BASE}/properties/${id}`, {
+  const res = await apiFetch(`${API_BASE}/properties/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(property),
@@ -155,25 +162,25 @@ export const updateProperty = async (id: number, property: Partial<Property>): P
 };
 
 export const deleteProperty = async (id: number): Promise<void> => {
-  const res = await fetch(`${API_BASE}/properties/${id}`, { method: 'DELETE' });
+  const res = await apiFetch(`${API_BASE}/properties/${id}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await getApiError(res, 'Failed to delete property'));
 };
 
 // Tenants
 export const getTenants = async (): Promise<Tenant[]> => {
-  const res = await fetch(`${API_BASE}/tenants`);
+  const res = await apiFetch(`${API_BASE}/tenants`);
   if (!res.ok) throw new Error('Failed to fetch tenants');
   return res.json();
 };
 
 export const getTenant = async (id: number): Promise<Tenant> => {
-  const res = await fetch(`${API_BASE}/tenants/${id}`);
+  const res = await apiFetch(`${API_BASE}/tenants/${id}`);
   if (!res.ok) throw new Error('Failed to fetch tenant');
   return res.json();
 };
 
 export const createTenant = async (tenant: Omit<Tenant, 'id' | 'createdAt'>): Promise<Tenant> => {
-  const res = await fetch(`${API_BASE}/tenants`, {
+  const res = await apiFetch(`${API_BASE}/tenants`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(tenant),
@@ -183,7 +190,7 @@ export const createTenant = async (tenant: Omit<Tenant, 'id' | 'createdAt'>): Pr
 };
 
 export const updateTenant = async (id: number, tenant: Partial<Tenant>): Promise<Tenant> => {
-  const res = await fetch(`${API_BASE}/tenants/${id}`, {
+  const res = await apiFetch(`${API_BASE}/tenants/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(tenant),
@@ -193,19 +200,19 @@ export const updateTenant = async (id: number, tenant: Partial<Tenant>): Promise
 };
 
 export const deleteTenant = async (id: number): Promise<void> => {
-  const res = await fetch(`${API_BASE}/tenants/${id}`, { method: 'DELETE' });
+  const res = await apiFetch(`${API_BASE}/tenants/${id}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await getApiError(res, 'Failed to delete tenant'));
 };
 
 // Transactions
 export const getTransactions = async (): Promise<Transaction[]> => {
-  const res = await fetch(`${API_BASE}/transactions`);
+  const res = await apiFetch(`${API_BASE}/transactions`);
   if (!res.ok) throw new Error('Failed to fetch transactions');
   return res.json();
 };
 
 export const createTransaction = async (transaction: Omit<Transaction, 'id' | 'createdAt'>): Promise<Transaction> => {
-  const res = await fetch(`${API_BASE}/transactions`, {
+  const res = await apiFetch(`${API_BASE}/transactions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(transaction),
@@ -216,13 +223,13 @@ export const createTransaction = async (transaction: Omit<Transaction, 'id' | 'c
 
 // Bookings
 export const getBookings = async (): Promise<Booking[]> => {
-  const res = await fetch(`${API_BASE}/bookings`);
+  const res = await apiFetch(`${API_BASE}/bookings`);
   if (!res.ok) throw new Error('Failed to fetch bookings');
   return res.json();
 };
 
 export const createBooking = async (booking: Omit<Booking, 'id' | 'createdAt'>): Promise<Booking> => {
-  const res = await fetch(`${API_BASE}/bookings`, {
+  const res = await apiFetch(`${API_BASE}/bookings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(booking),
@@ -234,7 +241,7 @@ export const createBooking = async (booking: Omit<Booking, 'id' | 'createdAt'>):
 };
 
 export const updateBooking = async (id: number, booking: Omit<Booking, 'id' | 'createdAt'>): Promise<Booking> => {
-  const res = await fetch(`${API_BASE}/bookings/${id}`, {
+  const res = await apiFetch(`${API_BASE}/bookings/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(booking),
@@ -247,13 +254,13 @@ export const updateBooking = async (id: number, booking: Omit<Booking, 'id' | 'c
 
 // Events
 export const getEvents = async (): Promise<EventItem[]> => {
-  const res = await fetch(`${API_BASE}/events`);
+  const res = await apiFetch(`${API_BASE}/events`);
   if (!res.ok) throw new Error('Failed to fetch events');
   return res.json();
 };
 
 export const createEvent = async (event: Omit<EventItem, 'id' | 'createdAt'>): Promise<EventItem> => {
-  const res = await fetch(`${API_BASE}/events`, {
+  const res = await apiFetch(`${API_BASE}/events`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(event),
@@ -263,7 +270,7 @@ export const createEvent = async (event: Omit<EventItem, 'id' | 'createdAt'>): P
 };
 
 export const updateEvent = async (id: number, event: Partial<EventItem>): Promise<EventItem> => {
-  const res = await fetch(`${API_BASE}/events/${id}`, {
+  const res = await apiFetch(`${API_BASE}/events/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(event),
@@ -273,20 +280,20 @@ export const updateEvent = async (id: number, event: Partial<EventItem>): Promis
 };
 
 export const deleteEvent = async (id: number): Promise<void> => {
-  const res = await fetch(`${API_BASE}/events/${id}`, { method: 'DELETE' });
+  const res = await apiFetch(`${API_BASE}/events/${id}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await getApiError(res, 'Failed to delete event'));
 };
 
 // Settings
 export const getMonthlyGoal = async (): Promise<number> => {
-  const res = await fetch(`${API_BASE}/settings/monthly-goal`);
+  const res = await apiFetch(`${API_BASE}/settings/monthly-goal`);
   if (!res.ok) throw new Error('Failed to fetch monthly goal');
   const data = await res.json();
   return data.monthlyGoal;
 };
 
 export const updateMonthlyGoal = async (monthlyGoal: number): Promise<number> => {
-  const res = await fetch(`${API_BASE}/settings/monthly-goal`, {
+  const res = await apiFetch(`${API_BASE}/settings/monthly-goal`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ monthlyGoal }),
