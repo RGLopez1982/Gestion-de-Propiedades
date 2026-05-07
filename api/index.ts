@@ -1,14 +1,27 @@
 import express from 'express';
 import crypto from 'crypto';
-import { Pool } from 'pg';
+import pg from 'pg';
 
 const app = express();
 app.use(express.json({ limit: '25mb' }));
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
-});
+const { Pool } = pg;
+let pool: pg.Pool | null = null;
+
+const getPool = () => {
+  if (!process.env.DATABASE_URL) {
+    throw new Error('DATABASE_URL no esta configurada');
+  }
+
+  if (!pool) {
+    pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
+    });
+  }
+
+  return pool;
+};
 
 const AUTH_USER = process.env.AUTH_USER || 'admin';
 const AUTH_PASSWORD = process.env.AUTH_PASSWORD || 'admin123';
@@ -60,7 +73,7 @@ const clearSessionCookie = (res: express.Response) => {
 };
 
 const q = async <T = any>(text: string, params: unknown[] = []) => {
-  const result = await pool.query<T>(text, params);
+  const result = await getPool().query<T>(text, params);
   return result.rows;
 };
 
