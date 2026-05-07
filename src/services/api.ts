@@ -9,15 +9,23 @@ export const getSession = async (): Promise<{ authenticated: boolean }> => {
 };
 
 export const login = async (username: string, password: string): Promise<void> => {
-  const res = await fetch(`${API_BASE}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  });
+  try {
+    const res = await fetch(`${API_BASE}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
 
-  if (!res.ok) {
-    const data = await res.json().catch(() => null);
-    throw new Error(data?.error || 'No se pudo iniciar sesion');
+    if (!res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      const data = contentType.includes('application/json')
+        ? await res.json().catch(() => null)
+        : null;
+      throw new Error(data?.error || `No se pudo iniciar sesion (${res.status})`);
+    }
+  } catch (error) {
+    if (error instanceof Error) throw error;
+    throw new Error('No se pudo conectar con el servidor de login');
   }
 };
 
