@@ -1,27 +1,35 @@
 import React, { useState, useEffect } from 'react';
-import { createTransaction, getProperties, Transaction, Property } from '../../services/api';
+import { createTransaction, getProperties, Transaction, Property, updateTransaction } from '../../services/api';
 import { parseMoneyInput } from '../../lib/money';
 import { normalizeTextInput } from '../../lib/text';
 
 interface TransactionFormProps {
   onSuccess: (transaction: Transaction) => void;
   onCancel: () => void;
+  transaction?: Transaction | null;
 }
 
-export function TransactionForm({ onSuccess, onCancel }: TransactionFormProps) {
+const getInitialFormData = (transaction?: Transaction | null) => ({
+  date: transaction?.date || new Date().toISOString().split('T')[0],
+  concept: transaction?.concept || '',
+  property_id: transaction?.property_id ? String(transaction.property_id) : '',
+  amount: transaction ? String(Math.abs(transaction.amount)) : '',
+  type: transaction?.type || 'expense' as 'income' | 'expense',
+  status: transaction?.status || 'Completado',
+  paidBy: transaction?.paidBy || '',
+  paymentMethod: transaction?.paymentMethod || '',
+});
+
+export function TransactionForm({ onSuccess, onCancel, transaction }: TransactionFormProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [properties, setProperties] = useState<Property[]>([]);
-  const [formData, setFormData] = useState({
-    date: new Date().toISOString().split('T')[0],
-    concept: '',
-    property_id: '',
-    amount: '',
-    type: 'expense' as 'income' | 'expense',
-    status: 'Completado',
-    paidBy: '',
-    paymentMethod: '',
-  });
+  const [formData, setFormData] = useState(getInitialFormData(transaction));
+
+  useEffect(() => {
+    setFormData(getInitialFormData(transaction));
+    setError('');
+  }, [transaction]);
 
   useEffect(() => {
     const loadProperties = async () => {
@@ -60,7 +68,7 @@ export function TransactionForm({ onSuccess, onCancel }: TransactionFormProps) {
         return;
       }
 
-      const transaction = await createTransaction({
+      const payload = {
         date: formData.date,
         concept: formData.concept,
         property_id: formData.property_id ? parseInt(formData.property_id) : undefined,
@@ -69,10 +77,13 @@ export function TransactionForm({ onSuccess, onCancel }: TransactionFormProps) {
         status: formData.status,
         paidBy: formData.type === 'expense' ? formData.paidBy : undefined,
         paymentMethod: formData.paymentMethod || undefined,
-      });
-      onSuccess(transaction);
+      };
+      const savedTransaction = transaction
+        ? await updateTransaction(transaction.id, payload)
+        : await createTransaction(payload);
+      onSuccess(savedTransaction);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al crear transacción');
+      setError(err instanceof Error ? err.message : 'Error al guardar transaccion');
     } finally {
       setLoading(false);
     }
@@ -234,7 +245,7 @@ export function TransactionForm({ onSuccess, onCancel }: TransactionFormProps) {
           disabled={loading}
           className="flex-1 px-4 py-2 bg-primary text-white rounded-lg font-bold hover:opacity-90 disabled:opacity-50 transition-all"
         >
-          {loading ? 'Guardando...' : 'Guardar transacción'}
+          {loading ? 'Guardando...' : transaction ? 'Guardar cambios' : 'Guardar transaccion'}
         </button>
       </div>
     </form>
