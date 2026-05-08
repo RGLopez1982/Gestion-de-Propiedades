@@ -204,3 +204,9 @@ Si tienes problemas:
 ---
 
 ¡La aplicación está lista para usar! 🎉
+
+## Nota operativa sobre archivos
+
+- En local y en Vercel/Supabase los comprobantes e imagenes siguen guardandose como texto/base64 en la base de datos.
+- Para evitar que la base crezca demasiado, el sistema ahora limita comprobantes e imagenes grandes.
+- Cuando el uso sea real y sostenido, conviene migrar esos archivos a Supabase Storage y guardar en la base solo nombre, URL y tipo de archivo.
