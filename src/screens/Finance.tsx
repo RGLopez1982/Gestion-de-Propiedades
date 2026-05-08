@@ -23,6 +23,7 @@ import { formatDateDisplay } from '../lib/dates';
 import { formatMoney } from '../lib/money';
 
 const OWNERS = ['Diego', 'Maru', 'Laura'];
+const sameOwner = (value: string | undefined, owner: string) => value?.trim().toUpperCase() === owner.toUpperCase();
 
 type OwnerSettlement = {
   owner: string;
@@ -105,7 +106,7 @@ export default function Finance() {
 
     return OWNERS.map((owner) => {
       const expensesPaid = items
-        .filter((transaction) => transaction.type === 'expense' && transaction.paidBy === owner)
+        .filter((transaction) => transaction.type === 'expense' && sameOwner(transaction.paidBy, owner))
         .reduce((sum, transaction) => sum + Math.abs(transaction.amount), 0);
 
       return {
