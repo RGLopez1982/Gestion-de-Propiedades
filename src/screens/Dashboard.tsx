@@ -14,6 +14,7 @@ import { Modal } from '../components/Modal';
 import { BookingForm } from '../components/forms/BookingForm';
 import { getBookingTimelineStatus, isUpcomingBooking, sortBookingsByCheckIn } from '../lib/bookings';
 import { formatDateDisplay } from '../lib/dates';
+import { formatMoney } from '../lib/money';
 
 const getOverlappingNights = (booking: Booking, monthStart: Date, monthEnd: Date) => {
   if (booking.status === 'Cancelado') return 0;
@@ -78,6 +79,21 @@ export default function Dashboard() {
           ? prev.map((item) => item.id === booking.id ? booking : item)
           : [booking, ...prev];
       });
+    }
+    setSelectedBooking(null);
+    modal.close();
+  };
+
+  const handleBookingDeleted = async () => {
+    try {
+      const [updatedBookings, updatedTransactions] = await Promise.all([
+        getBookings(),
+        getTransactions(),
+      ]);
+      setBookings(updatedBookings);
+      setTransactions(updatedTransactions);
+    } catch (error) {
+      console.error('Error refreshing dashboard data:', error);
     }
     setSelectedBooking(null);
     modal.close();
@@ -154,7 +170,7 @@ export default function Dashboard() {
       </section>
 
       <Modal isOpen={modal.isOpen} onClose={() => { setSelectedBooking(null); modal.close(); }} title={selectedBooking ? "Editar reserva" : "Crear reserva"} size="md">
-        <BookingForm booking={selectedBooking} onSuccess={handleBookingCreated} onCancel={() => { setSelectedBooking(null); modal.close(); }} />
+        <BookingForm booking={selectedBooking} onSuccess={handleBookingCreated} onDelete={handleBookingDeleted} onCancel={() => { setSelectedBooking(null); modal.close(); }} />
       </Modal>
 
       {/* Stats Grid */}
@@ -300,8 +316,8 @@ export default function Dashboard() {
                       <p className="whitespace-nowrap text-sm font-mono text-on-surface">{formatDateDisplay(booking.checkIn)} a {formatDateDisplay(booking.checkOut)}</p>
                     </td>
                     <td className="px-6 py-4 text-right">
-                      <p className="text-xs font-mono text-on-surface">${Number(booking.amountPaid || 0).toFixed(2)}</p>
-                      <p className="text-[10px] text-on-surface-variant">de ${Number(booking.amountTotal || 0).toFixed(2)}</p>
+                      <p className="text-xs font-mono text-on-surface">{formatMoney(Number(booking.amountPaid || 0))}</p>
+                      <p className="text-[10px] text-on-surface-variant">de {formatMoney(Number(booking.amountTotal || 0))}</p>
                       {booking.paymentMethod && (
                         <p className="text-[10px] text-on-surface-variant truncate">{booking.paymentMethod}</p>
                       )}
