@@ -9,34 +9,68 @@ import {
   ArrowDownRight,
   Lightbulb,
   CreditCard,
-  Banknote
+  Banknote,
+  Share2,
+  AlertCircle,
+  History
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { Booking, createTransaction, getBookings, getProperties, getTransactions, Property, Transaction } from '../services/api';
+import { Booking, closeFinanceCycle, FinanceCycle, getBookings, getFinanceCycles, getProperties, getTransactions, Property, Transaction } from '../services/api';
 import { useModal } from '../hooks/useModal';
 import { Modal } from '../components/Modal';
 import { TransactionForm } from '../components/forms/TransactionForm';
 import { formatDateDisplay } from '../lib/dates';
+import { formatMoney } from '../lib/money';
+
+const OWNERS = ['Diego', 'Maru', 'Laura'];
+
+type OwnerSettlement = {
+  owner: string;
+  expensesPaid: number;
+  profitShare: number;
+  payout: number;
+};
+
+type SettlementReport = {
+  title: string;
+  periodLabel: string;
+  income: number;
+  expense: number;
+  balance: number;
+  ownerRows: OwnerSettlement[];
+  paymentEntries: [string, number][];
+  expenseRows: Transaction[];
+};
+
+type ClosedCycle = SettlementReport & {
+  id: number;
+  closedAt: string;
+  transactionCount: number;
+};
 
 export default function Finance() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [properties, setProperties] = useState<Property[]>([]);
+  const [cycles, setCycles] = useState<FinanceCycle[]>([]);
   const [periodFilter, setPeriodFilter] = useState('cycle');
   const [propertyFilter, setPropertyFilter] = useState('all');
   const [loading, setLoading] = useState(true);
+  const [withdrawError, setWithdrawError] = useState('');
   const modal = useModal();
 
   const loadData = async () => {
     try {
-      const [transactionData, propertyData, bookingData] = await Promise.all([
+      const [transactionData, propertyData, bookingData, cycleData] = await Promise.all([
         getTransactions(),
         getProperties(),
         getBookings(),
+        getFinanceCycles(),
       ]);
       setTransactions(transactionData);
       setProperties(propertyData);
       setBookings(bookingData);
+      setCycles(cycleData);
     } catch (error) {
       console.error('Error loading finance data:', error);
     }
@@ -57,6 +91,38 @@ export default function Finance() {
   };
 
   const isWithdrawal = (transaction: Transaction) => transaction.concept.toLowerCase().startsWith('cobro de fondos');
+  const getTransactionOrder = (transaction: Transaction) => Number(transaction.id || 0);
+  const getCycleIncome = (items: Transaction[]) => items
+    .filter(t => t.type === 'income')
+    .reduce((sum, t) => sum + t.amount, 0);
+  const getCycleExpense = (items: Transaction[]) => items
+    .filter(t => t.type === 'expense')
+    .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+  const getOwnerSettlements = (items: Transaction[]): OwnerSettlement[] => {
+    const income = getCycleIncome(items);
+    const expense = getCycleExpense(items);
+    const baseShare = OWNERS.length > 0 ? (income - expense) / OWNERS.length : 0;
+
+    return OWNERS.map((owner) => {
+      const expensesPaid = items
+        .filter((transaction) => transaction.type === 'expense' && transaction.paidBy === owner)
+        .reduce((sum, transaction) => sum + Math.abs(transaction.amount), 0);
+
+      return {
+        owner,
+        expensesPaid,
+        profitShare: baseShare,
+        payout: baseShare + expensesPaid,
+      };
+    });
+  };
+  const getPaymentMethodTotals = (items: Transaction[]) => items
+    .filter((transaction) => transaction.type === 'income')
+    .reduce<Record<string, number>>((acc, transaction) => {
+      const method = transaction.paymentMethod?.trim() || 'Sin especificar';
+      acc[method] = (acc[method] || 0) + Number(transaction.amount || 0);
+      return acc;
+    }, {});
   const bookingPaymentTransactions: Transaction[] = bookings
     .filter((booking) => Number(booking.amountPaid || 0) > 0)
     .filter((booking) => !transactions.some((transaction) => Number(transaction.booking_id) === booking.id))
@@ -73,11 +139,11 @@ export default function Finance() {
       amount: Number(booking.amountPaid || 0),
       status: 'Completado',
       type: 'income',
+      paymentMethod: booking.paymentMethod || undefined,
       property: booking.property,
     }));
   const financeTransactions = [...transactions, ...bookingPaymentTransactions];
 
-  const getTransactionOrder = (transaction: Transaction) => Number(transaction.id || 0);
   const withdrawalTransactions = financeTransactions
     .filter(isWithdrawal)
     .sort((a, b) => getTransactionOrder(b) - getTransactionOrder(a));
@@ -94,6 +160,31 @@ export default function Finance() {
     .filter(t => t.type === 'expense')
     .reduce((sum, t) => sum + Math.abs(t.amount), 0);
   const currentCycleBalance = currentCycleIncome - currentCycleExpense;
+  const currentCycleExpenseTransactions = currentCycleTransactions.filter((transaction) => transaction.type === 'expense');
+  const ownerSettlements = getOwnerSettlements(currentCycleTransactions);
+  const ownerBaseShare = OWNERS.length > 0 ? currentCycleBalance / OWNERS.length : 0;
+  const paymentMethodTotals = getPaymentMethodTotals(currentCycleTransactions);
+  const closedCycles: ClosedCycle[] = cycles.map((cycle) => ({
+    id: cycle.id,
+    title: `Cierre del ${formatDateDisplay(cycle.closedAt)}`,
+    periodLabel: cycle.periodLabel,
+    closedAt: cycle.closedAt,
+    income: cycle.income,
+    expense: cycle.expense,
+    balance: cycle.balance,
+    ownerRows: cycle.ownerSettlements,
+    paymentEntries: cycle.paymentTotals.map((item) => [item.method, item.amount]),
+    expenseRows: cycle.expenseRows.map((item, index) => ({
+      id: -cycle.id * 1000 - index,
+      date: cycle.closedAt,
+      concept: item.concept,
+      amount: item.amount,
+      status: 'Completado',
+      type: 'expense',
+      paidBy: item.paidBy,
+    })),
+    transactionCount: cycle.transactionCount,
+  }));
   const currentMonth = new Date().toISOString().slice(0, 7);
   const filteredTransactions = financeTransactions.filter((transaction) => {
     const matchesPeriod = periodFilter === 'all'
@@ -121,6 +212,13 @@ export default function Finance() {
   
   const balance = totalIncome - totalExpense;
   const withdrawableBalance = currentCycleBalance;
+  const pendingPaymentBookings = bookings.filter((booking) => {
+    if (booking.status === 'Cancelado') return false;
+    const total = Math.round(Number(booking.amountTotal || 0));
+    const paid = Math.round(Number(booking.amountPaid || 0));
+    return total > 0 && paid < total;
+  });
+  const canWithdraw = withdrawableBalance > 0 && pendingPaymentBookings.length === 0;
 
   const operationalExpenses = filteredTransactions.filter((transaction) => transaction.type === 'expense' && !isWithdrawal(transaction));
   const totalOperationalExpenses = operationalExpenses.reduce((sum, transaction) => sum + Math.abs(transaction.amount), 0);
@@ -136,19 +234,16 @@ export default function Finance() {
     : [];
 
   const handleWithdraw = async () => {
-    if (withdrawableBalance <= 0) return;
+    if (!canWithdraw) return;
 
     try {
-      const transaction = await createTransaction({
-        date: new Date().toISOString().split('T')[0],
-        concept: 'Cobro de fondos - cierre de ciclo',
-        amount: withdrawableBalance,
-        status: 'Completado',
-        type: 'expense',
-      });
-      setTransactions(prev => [transaction, ...prev]);
+      setWithdrawError('');
+      const result = await closeFinanceCycle();
+      setTransactions(prev => [result.transaction, ...prev]);
+      setCycles(prev => [result.cycle, ...prev]);
     } catch (error) {
       console.error('Error creating withdrawal:', error);
+      setWithdrawError(error instanceof Error ? error.message : 'No se pudo cerrar el ciclo');
     }
   };
 
@@ -186,6 +281,8 @@ export default function Finance() {
           <td>${escapeHtml(transaction.concept)}</td>
           <td>${escapeHtml(transaction.property || 'Sin departamento')}</td>
           <td>${escapeHtml(transaction.type === 'income' ? 'Ingreso' : 'Egreso')}</td>
+          <td>${escapeHtml(transaction.paymentMethod || '-')}</td>
+          <td>${escapeHtml(transaction.paidBy || '-')}</td>
           <td class="${moneyClass}">${signedAmount.toFixed(2)}</td>
           <td>${escapeHtml(getMovementStatus(transaction))}</td>
         </tr>
@@ -260,12 +357,14 @@ export default function Finance() {
                 <th>Concepto</th>
                 <th>Departamento</th>
                 <th>Tipo</th>
+                <th>Medio de pago</th>
+                <th>Pago gasto</th>
                 <th>Monto</th>
                 <th>Estado</th>
               </tr>
             </thead>
             <tbody class="transactions">
-              ${rows || '<tr><td class="empty" colspan="6">No hay movimientos para los filtros seleccionados.</td></tr>'}
+              ${rows || '<tr><td class="empty" colspan="8">No hay movimientos para los filtros seleccionados.</td></tr>'}
             </tbody>
           </table>
         </body>
@@ -279,6 +378,178 @@ export default function Finance() {
     link.download = `reporte-finanzas-${exportDate}.xls`;
     link.click();
     URL.revokeObjectURL(url);
+  };
+
+  const createSettlementImageBlob = async (report: SettlementReport) => {
+    const escapeXml = (value: string | number) => String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;');
+
+    let y = 372;
+    const ownerSvg = report.ownerRows.map((item) => {
+      const row = `
+        <rect x="80" y="${y}" width="920" height="104" rx="16" fill="#f8fbff"/>
+        <text x="112" y="${y + 34}" class="owner">${escapeXml(item.owner)}</text>
+        <text x="960" y="${y + 32}" text-anchor="end" class="payout">${escapeXml(formatMoney(item.payout))}</text>
+        <text x="112" y="${y + 76}" class="muted">Ganancia base: ${escapeXml(formatMoney(item.profitShare))}</text>
+        <text x="510" y="${y + 76}" class="muted">Gastos que pago: ${escapeXml(formatMoney(item.expensesPaid))}</text>
+      `;
+      y += 122;
+      return row;
+    }).join('');
+
+    y += 36;
+    const paymentTitleY = y;
+    y += 58;
+    const paymentSvg = report.paymentEntries.length > 0
+      ? report.paymentEntries.map(([method, amount]) => {
+        const row = `
+          <text x="112" y="${y}" class="line-label">${escapeXml(method)}</text>
+          <text x="950" y="${y}" text-anchor="end" class="income">${escapeXml(formatMoney(amount))}</text>
+        `;
+        y += 48;
+        return row;
+      }).join('')
+      : (() => {
+        const row = `<text x="112" y="${y}" class="muted-big">No hay ingresos registrados en este ciclo.</text>`;
+        y += 52;
+        return row;
+      })();
+
+    y += 38;
+    const expensesTitleY = y;
+    y += 58;
+    const expensesSvg = report.expenseRows.length > 0
+      ? report.expenseRows.map((transaction) => {
+        const concept = transaction.concept.length > 44 ? `${transaction.concept.slice(0, 41)}...` : transaction.concept;
+        const row = `
+          <text x="112" y="${y}" class="line-label">${escapeXml(concept)}</text>
+          <text x="112" y="${y + 30}" class="muted-small">Pago: ${escapeXml(transaction.paidBy || 'Sin asignar')}</text>
+          <text x="950" y="${y}" text-anchor="end" class="expense">${escapeXml(formatMoney(Math.abs(transaction.amount)))}</text>
+        `;
+        y += 66;
+        return row;
+      }).join('')
+      : (() => {
+        const row = `<text x="112" y="${y}" class="muted-big">No hay gastos registrados en este ciclo.</text>`;
+        y += 52;
+        return row;
+      })();
+
+    const height = Math.max(1240, y + 160);
+    const svg = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="${height}" viewBox="0 0 1080 ${height}">
+        <style>
+          .title { font: 700 46px Arial, sans-serif; fill: #00355f; }
+          .subtitle { font: 500 24px Arial, sans-serif; fill: #5f6673; }
+          .section { font: 700 30px Arial, sans-serif; fill: #00355f; }
+          .metric-label { font: 700 18px Arial, sans-serif; fill: #5f6673; }
+          .metric-value { font: 700 34px Arial, sans-serif; }
+          .owner { font: 700 29px Arial, sans-serif; fill: #0f1f33; }
+          .payout { font: 700 33px Arial, sans-serif; fill: #00355f; }
+          .muted { font: 500 20px Arial, sans-serif; fill: #5f6673; }
+          .muted-small { font: 500 20px Arial, sans-serif; fill: #5f6673; }
+          .muted-big { font: 500 24px Arial, sans-serif; fill: #5f6673; }
+          .line-label { font: 700 26px Arial, sans-serif; fill: #0f1f33; }
+          .income { font: 700 26px Arial, sans-serif; fill: #007a53; }
+          .expense { font: 700 26px Arial, sans-serif; fill: #b01818; }
+        </style>
+        <rect width="1080" height="${height}" fill="#f4f7fb"/>
+        <rect x="40" y="40" width="1000" height="${height - 80}" rx="24" fill="#ffffff"/>
+
+        <text x="80" y="92" class="title">${escapeXml(report.title)}</text>
+        <text x="80" y="142" class="subtitle">${escapeXml(report.periodLabel)}</text>
+
+        <rect x="80" y="196" width="292" height="108" rx="16" fill="#eef4fb"/>
+        <text x="102" y="226" class="metric-label">Ingresos</text>
+        <text x="102" y="266" class="metric-value" fill="#007a53">${escapeXml(formatMoney(report.income))}</text>
+
+        <rect x="394" y="196" width="292" height="108" rx="16" fill="#eef4fb"/>
+        <text x="416" y="226" class="metric-label">Gastos</text>
+        <text x="416" y="266" class="metric-value" fill="#b01818">${escapeXml(formatMoney(report.expense))}</text>
+
+        <rect x="708" y="196" width="292" height="108" rx="16" fill="#eef4fb"/>
+        <text x="730" y="226" class="metric-label">Ganancia neta</text>
+        <text x="730" y="266" class="metric-value" fill="#00355f">${escapeXml(formatMoney(report.balance))}</text>
+
+        <text x="80" y="348" class="section">A cobrar por cada dueno</text>
+        ${ownerSvg}
+
+        <text x="80" y="${paymentTitleY}" class="section">Ingresos por medio de pago</text>
+        ${paymentSvg}
+
+        <text x="80" y="${expensesTitleY}" class="section">Detalle de gastos del ciclo</text>
+        ${expensesSvg}
+
+        <text x="100" y="${height - 92}" class="muted">Detalle generado desde Gestion de Propiedades.</text>
+      </svg>
+    `;
+
+    const svgUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
+    const image = new Image();
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = reject;
+      image.src = svgUrl;
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 1080;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(image, 0, 0);
+    URL.revokeObjectURL(svgUrl);
+
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png', 0.95));
+    return blob;
+  };
+
+  const downloadOrShareSettlementImage = async (report: SettlementReport, filePrefix: string) => {
+    const blob = await createSettlementImageBlob(report);
+    if (!blob) return;
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const file = new File([blob], `${filePrefix}-${stamp}.png`, { type: 'image/png' });
+    const canShareFile = navigator.canShare?.({ files: [file] });
+
+    if (canShareFile && navigator.share) {
+      await navigator.share({
+        title: report.title,
+        text: 'Detalle de ganancias, gastos y reparto.',
+        files: [file],
+      });
+      return;
+    }
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = file.name;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleShareSettlementImage = async () => {
+    const exportDate = formatDateDisplay(new Date().toISOString().split('T')[0]);
+    const periodLabel = periodFilter === 'cycle' ? 'Ciclo actual' : periodFilter === 'all' ? 'Todos los periodos' : `Mes ${periodFilter}`;
+
+    await downloadOrShareSettlementImage({
+      title: 'Reparto del ciclo',
+      periodLabel: `${periodLabel} - ${exportDate}`,
+      income: currentCycleIncome,
+      expense: currentCycleExpense,
+      balance: currentCycleBalance,
+      ownerRows: ownerSettlements,
+      paymentEntries: Object.entries(paymentMethodTotals),
+      expenseRows: currentCycleExpenseTransactions,
+    }, 'reparto-ciclo');
+  };
+
+  const handleShareClosedCycleImage = async (cycle: ClosedCycle) => {
+    await downloadOrShareSettlementImage(cycle, `historial-ciclo-${cycle.id}`);
   };
 
   return (
@@ -337,6 +608,13 @@ export default function Finance() {
         </div>
         
         <div className="flex gap-3 w-full lg:w-auto">
+          <button
+            onClick={handleShareSettlementImage}
+            className="flex-1 lg:flex-none flex items-center justify-center gap-2 border border-secondary text-secondary px-5 py-2 rounded-lg font-bold text-sm hover:bg-surface-container transition-colors"
+          >
+            <Share2 className="w-4 h-4" />
+            Reparto PNG
+          </button>
           <button
             onClick={handleExport}
             className="flex-1 lg:flex-none flex items-center justify-center gap-2 border border-primary text-primary px-5 py-2 rounded-lg font-bold text-sm hover:bg-surface-container transition-colors"
@@ -399,7 +677,14 @@ export default function Finance() {
                     {filteredTransactions.slice(0, 15).map((t, idx) => (
                       <tr key={idx} className="zebra-stripe border-b border-surface-container/30 last:border-0 hover:bg-active transition-colors">
                         <td className="px-6 py-4 text-xs font-mono text-on-surface">{formatDateDisplay(t.date)}</td>
-                        <td className="px-6 py-4 text-xs font-bold text-on-surface">{t.concept}</td>
+                        <td className="px-6 py-4 text-xs text-on-surface">
+                          <p className="font-bold">{t.concept}</p>
+                          {(t.paymentMethod || t.paidBy) && (
+                            <p className="mt-1 text-[10px] font-semibold text-outline">
+                              {[t.paymentMethod && `Medio: ${t.paymentMethod}`, t.paidBy && `Pago: ${t.paidBy}`].filter(Boolean).join(' - ')}
+                            </p>
+                          )}
+                        </td>
                         <td className="px-6 py-4 text-xs text-outline">{t.property || '-'}</td>
                         <td className={cn("px-6 py-4 text-xs font-bold text-right", t.type === 'income' ? 'text-secondary' : 'text-error')}>
                           {t.type === 'income' ? '+' : '-'}${Math.abs(t.amount).toFixed(2)}
@@ -428,7 +713,7 @@ export default function Finance() {
 
         {/* Sidebar Analytics */}
         <div className="lg:col-span-4 flex flex-col gap-6">
-          {/* Distribution Card */}
+          {/* Owner Expenses */}
           <div className="bg-white border border-outline-variant/30 rounded-xl p-6 shadow-sm">
             <h3 className="font-display font-bold text-primary mb-6">Distribución de Gastos</h3>
             <div className="space-y-6">
@@ -449,20 +734,92 @@ export default function Finance() {
             </div>
           </div>
 
+          <div className="bg-white border border-outline-variant/30 rounded-xl p-6 shadow-sm">
+            <h3 className="font-display font-bold text-primary mb-4">Reparto del ciclo</h3>
+            <div className="grid grid-cols-2 gap-3 mb-5">
+              <div className="rounded-lg bg-surface-container-low p-3">
+                <p className="text-[10px] font-bold uppercase text-outline">Ganancia neta</p>
+                <p className="font-display text-xl font-bold text-primary">${currentCycleBalance.toFixed(2)}</p>
+              </div>
+              <div className="rounded-lg bg-surface-container-low p-3">
+                <p className="text-[10px] font-bold uppercase text-outline">Parte base</p>
+                <p className="font-display text-xl font-bold text-secondary">${ownerBaseShare.toFixed(2)}</p>
+              </div>
+            </div>
+            <div className="space-y-3">
+              {ownerSettlements.map((item) => (
+                <div key={item.owner} className="border border-outline-variant/30 rounded-lg p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="font-bold text-sm text-on-surface">{item.owner}</p>
+                    <p className="font-display font-bold text-primary">${item.payout.toFixed(2)}</p>
+                  </div>
+                  <p className="mt-1 text-[10px] text-outline font-semibold">
+                    Base ${item.profitShare.toFixed(2)} + gastos pagados ${item.expensesPaid.toFixed(2)}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white border border-outline-variant/30 rounded-xl p-6 shadow-sm">
+            <h3 className="font-display font-bold text-primary mb-4">Ingresos por medio de pago</h3>
+            <div className="space-y-3">
+              {Object.entries(paymentMethodTotals).length > 0 ? (
+                Object.entries(paymentMethodTotals).map(([method, amount]) => (
+                  <div key={method} className="flex items-center justify-between gap-3 text-sm">
+                    <span className="font-bold text-on-surface">{method}</span>
+                    <span className="font-display font-bold text-secondary">${amount.toFixed(2)}</span>
+                  </div>
+                ))
+              ) : (
+                <p className="text-sm text-on-surface-variant">Todavia no hay ingresos en el ciclo actual.</p>
+              )}
+            </div>
+          </div>
+
           {/* Projected Payout */}
           <div className="bg-primary text-white rounded-xl p-6 relative overflow-hidden shadow-lg group">
             <div className="relative z-10">
-              <h3 className="text-sm font-bold opacity-70 mb-1">Saldo Disponible</h3>
+              <h3 className="text-sm font-bold opacity-70 mb-1">Saldo neto disponible</h3>
               <p className="text-[10px] opacity-60 mb-6 uppercase tracking-wider">Ciclo actual desde el ultimo cobro</p>
               <h2 className="font-display text-4xl font-bold mb-8">${Math.max(withdrawableBalance, 0).toFixed(2)}</h2>
               <button
                 onClick={handleWithdraw}
-                disabled={withdrawableBalance <= 0}
+                disabled={!canWithdraw}
                 className="w-full bg-secondary hover:bg-secondary/90 text-white py-3 rounded-lg font-bold text-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Banknote className="w-4 h-4" />
                 Cobrar
               </button>
+              {pendingPaymentBookings.length > 0 && (
+                <div className="mt-4 rounded-lg bg-white/12 border border-white/20 p-3">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <div>
+                      <p className="text-xs font-bold">No se puede cobrar todavia</p>
+                      <p className="mt-1 text-[10px] opacity-80">
+                        Primero registra el pago completo de estas reservas:
+                      </p>
+                      <div className="mt-2 space-y-1">
+                        {pendingPaymentBookings.slice(0, 4).map((booking) => (
+                          <p key={booking.id} className="text-[10px] leading-snug">
+                            {booking.tenant} - {booking.property || 'Sin departamento'}: {formatMoney(Number(booking.amountPaid || 0))} de {formatMoney(Number(booking.amountTotal || 0))}
+                          </p>
+                        ))}
+                        {pendingPaymentBookings.length > 4 && (
+                          <p className="text-[10px] opacity-80">Y {pendingPaymentBookings.length - 4} reserva(s) mas.</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {withdrawError && (
+                <div className="mt-4 rounded-lg bg-white/12 border border-white/20 p-3">
+                  <p className="text-xs font-bold">No se pudo cerrar el ciclo</p>
+                  <p className="mt-1 text-[10px] opacity-80">{withdrawError}</p>
+                </div>
+              )}
             </div>
             <CreditCard className="absolute -right-8 -bottom-8 w-40 h-40 opacity-10 rotate-12 transition-transform group-hover:scale-110" />
             <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2" />
@@ -484,6 +841,62 @@ export default function Finance() {
           </div>
         </div>
       </div>
+
+      <section className="bg-white border border-outline-variant/30 rounded-xl overflow-hidden shadow-sm">
+        <div className="px-6 py-4 border-b border-surface-container flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
+              <History className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="font-display font-bold text-primary">Historial de ciclos cobrados</h3>
+              <p className="text-xs text-outline font-medium">Cierres anteriores listos para consultar o compartir.</p>
+            </div>
+          </div>
+          <span className="text-xs text-outline font-medium">{closedCycles.length} ciclos cerrados</span>
+        </div>
+
+        {closedCycles.length === 0 ? (
+          <div className="p-6 text-center">
+            <p className="text-on-surface-variant">Todavia no hay ciclos cobrados para mostrar.</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-surface-container">
+            {closedCycles.map((cycle, index) => (
+              <div key={cycle.id} className="px-6 py-4 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-bold text-outline uppercase tracking-widest">Ciclo cerrado #{closedCycles.length - index}</p>
+                  <h4 className="mt-1 font-display font-bold text-on-surface">{cycle.title}</h4>
+                  <p className="mt-1 text-xs text-outline font-medium">{cycle.periodLabel} · {cycle.transactionCount} movimientos</p>
+                </div>
+
+                <div className="grid grid-cols-3 gap-3 xl:min-w-[440px]">
+                  <div className="rounded-lg bg-surface-container-low p-3">
+                    <p className="text-[10px] font-bold uppercase text-outline">Ingresos</p>
+                    <p className="font-display font-bold text-secondary">{formatMoney(cycle.income)}</p>
+                  </div>
+                  <div className="rounded-lg bg-surface-container-low p-3">
+                    <p className="text-[10px] font-bold uppercase text-outline">Gastos</p>
+                    <p className="font-display font-bold text-error">{formatMoney(cycle.expense)}</p>
+                  </div>
+                  <div className="rounded-lg bg-surface-container-low p-3">
+                    <p className="text-[10px] font-bold uppercase text-outline">Neto</p>
+                    <p className="font-display font-bold text-primary">{formatMoney(cycle.balance)}</p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => handleShareClosedCycleImage(cycle)}
+                  className="w-full xl:w-auto flex items-center justify-center gap-2 border border-secondary text-secondary px-5 py-2 rounded-lg font-bold text-sm hover:bg-surface-container transition-colors"
+                >
+                  <Share2 className="w-4 h-4" />
+                  Compartir PNG
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
