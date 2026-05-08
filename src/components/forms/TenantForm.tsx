@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { createTenant, Tenant, updateTenant } from '../../services/api';
+import { normalizeTextInput } from '../../lib/text';
 
 interface TenantFormProps {
   onSuccess: (tenant: Tenant) => void;
@@ -25,7 +26,7 @@ export function TenantForm({ onSuccess, onCancel, tenant }: TenantFormProps) {
     const { name, value } = e.target;
     setFormData(prev => ({
       ...prev,
-      [name]: value
+      [name]: normalizeTextInput(name, value)
     }));
   };
 
