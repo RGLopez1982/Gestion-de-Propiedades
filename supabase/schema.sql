@@ -37,6 +37,8 @@ create table if not exists transactions (
   amount numeric not null,
   status text default 'Completado',
   type text default 'income',
+  paid_by text,
+  payment_method text,
   created_at timestamptz default now()
 );
 
@@ -51,6 +53,7 @@ create table if not exists bookings (
   amount_total numeric default 0,
   amount_paid numeric default 0,
   refund_issued boolean default false,
+  refund_amount numeric default 0,
   received_by text,
   booking_source text,
   payment_method text,
@@ -89,6 +92,28 @@ create table if not exists settings (
   updated_at timestamptz default now()
 );
 
+create table if not exists finance_cycles (
+  id serial primary key,
+  closed_at text not null,
+  period_label text not null,
+  income numeric not null default 0,
+  expense numeric not null default 0,
+  balance numeric not null default 0,
+  owner_settlements text not null default '[]',
+  payment_totals text not null default '[]',
+  expense_rows text not null default '[]',
+  transaction_count integer not null default 0,
+  withdrawal_transaction_id integer references transactions(id) on delete set null,
+  created_at timestamptz default now()
+);
+
+create table if not exists finance_cycle_items (
+  id serial primary key,
+  cycle_id integer references finance_cycles(id) on delete cascade,
+  transaction_id integer references transactions(id) on delete cascade
+);
+
 create index if not exists bookings_property_dates_idx on bookings (property_id, check_in, check_out);
 create index if not exists bookings_tenant_lower_idx on bookings (lower(tenant));
 create index if not exists transactions_booking_idx on transactions (booking_id);
+create index if not exists finance_cycles_closed_idx on finance_cycles (id desc);
