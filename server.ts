@@ -394,6 +394,22 @@ const validateTransactionInput = (data: {
   return null;
 };
 
+const getProtectedTransactionError = (transaction: TransactionRow | undefined) => {
+  if (!transaction) return 'Movimiento no encontrado';
+  if (transaction.booking_id) return 'No se puede modificar un movimiento generado por una reserva. Edita la reserva para corregirlo.';
+  if (isWithdrawalConcept(transaction.concept)) return 'No se puede modificar un cierre de ciclo.';
+  const cycleItem = db.prepare('SELECT id FROM finance_cycle_items WHERE transaction_id = ? LIMIT 1').get(transaction.id);
+  if (cycleItem) return 'No se puede modificar un movimiento de un ciclo ya cobrado.';
+  return null;
+};
+
+const getTransactionById = (id: number | string) => db.prepare(`
+  SELECT transactions.*, COALESCE(properties.department, properties.name) as property
+  FROM transactions
+  LEFT JOIN properties ON transactions.property_id = properties.id
+  WHERE transactions.id = ?
+`).get(id) as TransactionRow | undefined;
+
 const getPendingPaymentBookings = () => db.prepare(`
   SELECT id, tenant, amountTotal, amountPaid, COALESCE(properties.department, properties.name) as property
   FROM bookings
@@ -1006,6 +1022,60 @@ app.post('/api/transactions', (req, res) => {
       WHERE transactions.id = ?
     `).get(result.lastInsertRowid);
     res.json(transaction);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
+app.put('/api/transactions/:id', (req, res) => {
+  try {
+    const existing = getTransactionById(req.params.id);
+    const protectionError = getProtectedTransactionError(existing);
+    if (protectionError) {
+      return res.status(existing ? 409 : 404).json({ error: protectionError });
+    }
+
+    const { date, concept, property_id, amount, status, type, paidBy, paymentMethod } = req.body;
+    if (isWithdrawalConcept(concept)) {
+      return res.status(400).json({ error: 'Usa el boton Cobrar para cerrar el ciclo con controles.' });
+    }
+    const validationError = validateTransactionInput({ date, concept, amount, type, paidBy, paymentMethod });
+    if (validationError) return res.status(400).json({ error: validationError });
+
+    const normalizedConcept = upperText(concept);
+    const normalizedPaidBy = upperText(paidBy);
+    const normalizedPaymentMethod = upperText(paymentMethod);
+    db.prepare(`
+      UPDATE transactions
+      SET date = ?, concept = ?, property_id = ?, amount = ?, status = ?, type = ?, paidBy = ?, paymentMethod = ?
+      WHERE id = ?
+    `).run(
+      date,
+      normalizedConcept,
+      property_id || null,
+      roundMoney(amount),
+      status,
+      type,
+      type === 'expense' ? normalizedPaidBy || null : null,
+      normalizedPaymentMethod || null,
+      req.params.id
+    );
+    res.json(getTransactionById(req.params.id));
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
+app.delete('/api/transactions/:id', (req, res) => {
+  try {
+    const existing = getTransactionById(req.params.id);
+    const protectionError = getProtectedTransactionError(existing);
+    if (protectionError) {
+      return res.status(existing ? 409 : 404).json({ error: protectionError });
+    }
+
+    db.prepare('DELETE FROM transactions WHERE id = ?').run(req.params.id);
+    res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
   }
