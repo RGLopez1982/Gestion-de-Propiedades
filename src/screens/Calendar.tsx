@@ -16,6 +16,7 @@ import { BookingForm } from '../components/forms/BookingForm';
 import { BookingTimelineStatus, getBookingTimelineStatus } from '../lib/bookings';
 import { formatDateDisplay } from '../lib/dates';
 import { openStoredFile, parseStoredFiles } from '../lib/files';
+import { formatMoney } from '../lib/money';
 
 const weekdays = ['DOM', 'LUN', 'MAR', 'MIE', 'JUE', 'VIE', 'SAB'];
 
@@ -106,6 +107,12 @@ export default function Calendar() {
     modal.close();
   };
 
+  const handleBookingDeleted = () => {
+    loadBookings();
+    setSelectedBooking(null);
+    modal.close();
+  };
+
   const openNewBooking = () => {
     setSelectedBooking(null);
     modal.open();
@@ -137,7 +144,7 @@ export default function Calendar() {
       </section>
 
       <Modal isOpen={modal.isOpen} onClose={() => { setSelectedBooking(null); modal.close(); }} title={selectedBooking ? "Editar reserva" : "Crear reserva"} size="md">
-        <BookingForm booking={selectedBooking} onSuccess={handleBookingCreated} onCancel={() => { setSelectedBooking(null); modal.close(); }} />
+        <BookingForm booking={selectedBooking} onSuccess={handleBookingCreated} onDelete={handleBookingDeleted} onCancel={() => { setSelectedBooking(null); modal.close(); }} />
       </Modal>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
@@ -250,7 +257,7 @@ export default function Calendar() {
                         <CalendarIcon className="w-3.5 h-3.5" />
                         <span><strong className="text-on-surface">Check-out:</strong> {formatDateDisplay(booking.checkOut)}</span>
                       </span>
-                      <span className="font-mono">${Number(booking.amountPaid || 0).toFixed(2)} pagado de ${Number(booking.amountTotal || 0).toFixed(2)}</span>
+                      <span className="font-mono">{formatMoney(Number(booking.amountPaid || 0))} pagado de {formatMoney(Number(booking.amountTotal || 0))}</span>
                       {(booking.receivedBy || booking.bookingSource || booking.paymentMethod) && (
                         <span>
                           {[booking.receivedBy && `Recibio: ${booking.receivedBy}`, booking.bookingSource && `Canal: ${booking.bookingSource}`, booking.paymentMethod && `Pago: ${booking.paymentMethod}`]
