@@ -29,6 +29,8 @@ export default function TenantDetails() {
   const navigate = useNavigate();
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [loading, setLoading] = useState(true);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [notice, setNotice] = useState('');
   const editModal = useModal();
 
   useEffect(() => {
@@ -63,25 +65,27 @@ export default function TenantDetails() {
     editModal.close();
   };
 
-  const handleTenantDeleted = async () => {
+  const handleTenantDeleted = () => {
     if (!tenant) return;
+    setDeleteDialogOpen(true);
+  };
 
-    const confirmed = window.confirm(`Eliminar a ${tenant.name}? Esta accion no elimina sus reservas historicas.`);
-    if (!confirmed) return;
-
+  const confirmTenantDeleted = async () => {
+    if (!tenant) return;
     try {
       await deleteTenant(tenant.id);
       navigate('/tenants');
     } catch (error) {
       console.error('Error deleting tenant:', error);
-      window.alert('No se pudo eliminar el huesped. Intentalo nuevamente.');
+      setDeleteDialogOpen(false);
+      setNotice('No se pudo eliminar el huesped. Intentalo nuevamente.');
     }
   };
 
   const handleCallTenant = () => {
     const phoneHref = getPhoneHref(tenant?.phone);
     if (!phoneHref) {
-      window.alert('Este huesped no tiene telefono cargado.');
+      setNotice('Este huesped no tiene telefono cargado.');
       return;
     }
 
@@ -94,7 +98,7 @@ export default function TenantDetails() {
     const booking = getMostRelevantBooking(stays);
     const opened = openWhatsappWeb(tenant.phone, buildReservationWhatsappMessage(tenant, booking));
     if (!opened) {
-      window.alert('Este huesped no tiene telefono cargado para WhatsApp.');
+      setNotice('Este huesped no tiene telefono cargado para WhatsApp.');
     }
   };
 
@@ -163,6 +167,31 @@ export default function TenantDetails() {
           onSuccess={handleTenantUpdated}
           onCancel={editModal.close}
         />
+      </Modal>
+
+      <Modal isOpen={deleteDialogOpen} onClose={() => setDeleteDialogOpen(false)} title="Eliminar huesped" size="sm">
+        <div className="space-y-5">
+          <p className="text-sm text-on-surface-variant">
+            Vas a eliminar a <strong>{tenant?.name}</strong>. Esta accion no elimina sus reservas historicas.
+          </p>
+          <div className="flex gap-3">
+            <button onClick={() => setDeleteDialogOpen(false)} className="flex-1 rounded-lg border border-outline-variant/30 px-4 py-2 font-bold">
+              Volver
+            </button>
+            <button onClick={confirmTenantDeleted} className="flex-1 rounded-lg bg-error px-4 py-2 font-bold text-white">
+              Eliminar
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal isOpen={Boolean(notice)} onClose={() => setNotice('')} title="Aviso" size="sm">
+        <div className="space-y-5">
+          <p className="text-sm text-on-surface-variant">{notice}</p>
+          <button onClick={() => setNotice('')} className="w-full rounded-lg bg-primary px-4 py-2 font-bold text-white">
+            Entendido
+          </button>
+        </div>
       </Modal>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
