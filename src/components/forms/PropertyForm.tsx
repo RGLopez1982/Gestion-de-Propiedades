@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { createProperty, updateProperty, Property } from '../../services/api';
+import { parseMoneyInput } from '../../lib/money';
+import { normalizeTextInput } from '../../lib/text';
 
 interface PropertyFormProps {
   onSuccess: (property: Property) => void;
@@ -41,13 +43,24 @@ export function PropertyForm({ onSuccess, onCancel, property }: PropertyFormProp
     const { name, value } = e.target;
     setFormData(prev => ({
       ...prev,
-      [name]: value
+      [name]: normalizeTextInput(name, value)
     }));
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []) as File[];
     if (files.length === 0) return;
+    if (uploadedImages.length + files.length > 12) {
+      setError('Podes cargar hasta 12 imagenes por propiedad.');
+      e.target.value = '';
+      return;
+    }
+    const oversized = files.find((file) => file.size > 2 * 1024 * 1024);
+    if (oversized) {
+      setError(`La imagen ${oversized.name} supera los 2 MB.`);
+      e.target.value = '';
+      return;
+    }
 
     const readers = files.map((file) => new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
@@ -86,8 +99,8 @@ export function PropertyForm({ onSuccess, onCancel, property }: PropertyFormProp
         name: formData.name,
         location: formData.department,
         department: formData.department,
-        monthlyRate: parseFloat(formData.nightlyRate) || 0,
-        nightlyRate: parseFloat(formData.nightlyRate) || 0,
+        monthlyRate: parseMoneyInput(formData.nightlyRate),
+        nightlyRate: parseMoneyInput(formData.nightlyRate),
         capacity: parseInt(formData.capacity) || 1,
         image: images[0],
         images,
@@ -147,13 +160,13 @@ export function PropertyForm({ onSuccess, onCancel, property }: PropertyFormProp
           Precio por noche ($)
         </label>
         <input
-          type="number"
+          type="text"
+          inputMode="numeric"
           name="nightlyRate"
           value={formData.nightlyRate}
           onChange={handleChange}
           required
-          step="0.01"
-          placeholder="45000.00"
+          placeholder="45000"
           className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
         />
       </div>
