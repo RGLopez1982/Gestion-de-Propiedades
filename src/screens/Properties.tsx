@@ -97,7 +97,8 @@ export default function Properties() {
       const query = filters.search.trim().toLowerCase();
       const searchable = `${prop.name} ${prop.department || ''} ${prop.location || ''}`.toLowerCase();
       const matchesSearch = !query || searchable.includes(query);
-      const matchesStatus = filters.status === 'Todos' || prop.status === filters.status;
+      const displayStatus = prop.availabilityStatus || prop.status;
+      const matchesStatus = filters.status === 'Todos' || displayStatus === filters.status;
       const matchesCapacity = filters.capacity === 'Todas' || Number(prop.capacity || 1) >= Number(filters.capacity);
       return matchesSearch && matchesStatus && matchesCapacity;
     })
@@ -128,8 +129,8 @@ export default function Properties() {
   const summary = filteredProperties.slice(0, 3).map((prop) => ({
     id: prop.id,
     unit: prop.department || prop.location || prop.name,
-    status: prop.status === 'Ocupado' ? 'OCUPADO' : prop.status === 'Disponible' ? 'DISPONIBLE' : 'MANTENIMIENTO',
-    statusColor: getStatusColor(prop.status).statusColor,
+    status: (prop.availabilityStatus || prop.status) === 'Ocupado' ? 'OCUPADO' : (prop.availabilityStatus || prop.status) === 'Disponible' ? 'DISPONIBLE' : 'MANTENIMIENTO',
+    statusColor: getStatusColor(prop.availabilityStatus || prop.status).statusColor,
     capacity: `${prop.capacity || 1} persona${(prop.capacity || 1) > 1 ? 's' : ''}`,
     nightly: `$${(prop.nightlyRate ?? prop.monthlyRate ?? 0).toFixed(2)}`
   }));
@@ -273,7 +274,8 @@ export default function Properties() {
           </div>
         ) : (
           filteredProperties.map((prop) => {
-            const { statusColor, indicatorColor } = getStatusColor(prop.status);
+            const displayStatus = prop.availabilityStatus || prop.status;
+            const { statusColor, indicatorColor } = getStatusColor(displayStatus);
             const images = getPropertyImages(prop);
             const coverImage = images[0] || prop.image || 'https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?auto=format&fit=crop&q=80&w=600';
             const nightlyRate = prop.nightlyRate ?? prop.monthlyRate ?? 0;
@@ -290,9 +292,14 @@ export default function Properties() {
                   <div className="absolute top-4 right-4">
                     <span className={cn("inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold uppercase", statusColor)}>
                       <div className={cn("w-1.5 h-1.5 rounded-full", indicatorColor)} />
-                      {prop.status}
+                      {displayStatus}
                     </span>
                   </div>
+                  {prop.status !== displayStatus && (
+                    <div className="absolute top-14 right-4 rounded-full bg-black/60 px-2 py-1 text-[10px] font-bold text-white">
+                      Manual: {prop.status}
+                    </div>
+                  )}
                   {images.length > 1 && (
                     <div className="absolute bottom-4 left-4 bg-black/60 text-white px-2 py-1 rounded text-[10px] font-bold">
                       {images.length} imagenes
