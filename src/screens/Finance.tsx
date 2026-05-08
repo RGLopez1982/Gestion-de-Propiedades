@@ -12,10 +12,12 @@ import {
   Banknote,
   Share2,
   AlertCircle,
-  History
+  History,
+  Pencil,
+  Trash2
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { Booking, closeFinanceCycle, FinanceCycle, getBookings, getFinanceCycles, getProperties, getTransactions, Property, Transaction } from '../services/api';
+import { Booking, closeFinanceCycle, deleteTransaction, FinanceCycle, getBookings, getFinanceCycles, getProperties, getTransactions, Property, Transaction } from '../services/api';
 import { useModal } from '../hooks/useModal';
 import { Modal } from '../components/Modal';
 import { TransactionForm } from '../components/forms/TransactionForm';
@@ -58,6 +60,10 @@ export default function Finance() {
   const [propertyFilter, setPropertyFilter] = useState('all');
   const [loading, setLoading] = useState(true);
   const [withdrawError, setWithdrawError] = useState('');
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Transaction | null>(null);
+  const [deleteError, setDeleteError] = useState('');
+  const [deleting, setDeleting] = useState(false);
   const modal = useModal();
 
   const loadData = async () => {
@@ -86,12 +92,49 @@ export default function Finance() {
     fetchData();
   }, []);
 
-  const handleTransactionCreated = (transaction: Transaction) => {
-    setTransactions(prev => [transaction, ...prev]);
+  const handleTransactionSaved = (transaction: Transaction) => {
+    setTransactions(prev => {
+      const exists = prev.some((item) => item.id === transaction.id);
+      return exists
+        ? prev.map((item) => item.id === transaction.id ? transaction : item)
+        : [transaction, ...prev];
+    });
+    setEditingTransaction(null);
     modal.close();
   };
 
   const isWithdrawal = (transaction: Transaction) => transaction.concept.toLowerCase().startsWith('cobro de fondos');
+  const canEditManualTransaction = (transaction: Transaction) => Number(transaction.id) > 0 && !transaction.booking_id && !isWithdrawal(transaction);
+  const openCreateTransaction = () => {
+    setEditingTransaction(null);
+    modal.open();
+  };
+  const openEditTransaction = (transaction: Transaction) => {
+    setEditingTransaction(transaction);
+    modal.open();
+  };
+  const closeTransactionModal = () => {
+    setEditingTransaction(null);
+    modal.close();
+  };
+  const requestDeleteTransaction = (transaction: Transaction) => {
+    setDeleteError('');
+    setDeleteTarget(transaction);
+  };
+  const confirmDeleteTransaction = async () => {
+    if (!deleteTarget) return;
+    try {
+      setDeleting(true);
+      setDeleteError('');
+      await deleteTransaction(deleteTarget.id);
+      setTransactions(prev => prev.filter((transaction) => transaction.id !== deleteTarget.id));
+      setDeleteTarget(null);
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : 'No se pudo eliminar el movimiento');
+    } finally {
+      setDeleting(false);
+    }
+  };
   const getTransactionOrder = (transaction: Transaction) => Number(transaction.id || 0);
   const getCycleIncome = (items: Transaction[]) => items
     .filter(t => t.type === 'income')
@@ -624,7 +667,7 @@ export default function Finance() {
             Exportar Excel
           </button>
           <button 
-            onClick={modal.open}
+            onClick={openCreateTransaction}
             className="flex-1 lg:flex-none flex items-center justify-center gap-2 bg-primary text-white px-5 py-2 rounded-lg font-bold text-sm hover:opacity-90 transition-opacity shadow-lg shadow-primary/20"
           >
             <Plus className="w-4 h-4" />
@@ -636,14 +679,61 @@ export default function Finance() {
       {/* Modal */}
       <Modal 
         isOpen={modal.isOpen} 
-        onClose={modal.close} 
-        title="Registrar transacción"
+        onClose={closeTransactionModal} 
+        title={editingTransaction ? 'Editar transaccion' : 'Registrar transaccion'}
         size="md"
       >
         <TransactionForm 
-          onSuccess={handleTransactionCreated}
-          onCancel={modal.close}
+          transaction={editingTransaction}
+          onSuccess={handleTransactionSaved}
+          onCancel={closeTransactionModal}
         />
+      </Modal>
+
+      <Modal
+        isOpen={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        title="Eliminar movimiento"
+        size="sm"
+      >
+        <div className="space-y-4">
+          {deleteError && (
+            <div className="p-3 bg-error-container text-on-error-container rounded-lg text-sm">
+              {deleteError}
+            </div>
+          )}
+          <p className="text-sm text-on-surface-variant leading-relaxed">
+            Vas a eliminar el movimiento <strong className="text-on-surface">{deleteTarget?.concept}</strong>. Si fue un gasto cargado por error, se quitara del ciclo actual y del reparto.
+          </p>
+          <div className="rounded-lg bg-surface-container-low p-3 text-sm">
+            <div className="flex justify-between gap-3">
+              <span className="text-outline font-bold">Monto</span>
+              <span className="font-bold text-on-surface">{deleteTarget ? formatMoney(Math.abs(deleteTarget.amount)) : '-'}</span>
+            </div>
+            <div className="mt-2 flex justify-between gap-3">
+              <span className="text-outline font-bold">Fecha</span>
+              <span className="font-bold text-on-surface">{deleteTarget ? formatDateDisplay(deleteTarget.date) : '-'}</span>
+            </div>
+          </div>
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => setDeleteTarget(null)}
+              disabled={deleting}
+              className="flex-1 px-4 py-2 border border-outline-variant/30 rounded-lg text-on-surface font-bold hover:bg-surface-container transition-colors disabled:opacity-50"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={confirmDeleteTransaction}
+              disabled={deleting}
+              className="flex-1 px-4 py-2 bg-error text-white rounded-lg font-bold hover:opacity-90 disabled:opacity-50 transition-all"
+            >
+              {deleting ? 'Eliminando...' : 'Eliminar'}
+            </button>
+          </div>
+        </div>
       </Modal>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
@@ -672,6 +762,7 @@ export default function Finance() {
                       <th className="px-6 py-4">Propiedad</th>
                       <th className="px-6 py-4 text-right">Monto</th>
                       <th className="px-6 py-4 text-center">Estado</th>
+                      <th className="px-6 py-4 text-center">Acciones</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -699,6 +790,30 @@ export default function Finance() {
                               {getMovementStatus(t)}
                             </span>
                           </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          {canEditManualTransaction(t) ? (
+                            <div className="flex items-center justify-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => openEditTransaction(t)}
+                                className="h-8 w-8 inline-flex items-center justify-center rounded-lg border border-outline-variant/30 text-primary hover:bg-surface-container transition-colors"
+                                title="Editar movimiento"
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => requestDeleteTransaction(t)}
+                                className="h-8 w-8 inline-flex items-center justify-center rounded-lg border border-outline-variant/30 text-error hover:bg-error-container/40 transition-colors"
+                                title="Eliminar movimiento"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="block text-center text-xs text-outline">-</span>
+                          )}
                         </td>
                       </tr>
                     ))}
