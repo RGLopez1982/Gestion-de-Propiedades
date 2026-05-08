@@ -1,11 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { createBooking, getBookings, getProperties, updateBooking, Booking, Property } from '../../services/api';
+import { createBooking, deleteBooking, getBookings, getProperties, updateBooking, Booking, Property } from '../../services/api';
 import { formatDateDisplay } from '../../lib/dates';
 import { openStoredFile, parseStoredFiles } from '../../lib/files';
+import { formatMoney, parseMoneyInput } from '../../lib/money';
+import { normalizeTextInput } from '../../lib/text';
 
 interface BookingFormProps {
   onSuccess: (booking: Booking) => void;
   onCancel: () => void;
+  onDelete?: (booking: Booking) => void;
   booking?: Booking | null;
 }
 
@@ -22,7 +25,18 @@ const hasDateOverlap = (startA: string, endA: string, startB: string, endB: stri
 
 const todayKey = new Date().toISOString().split('T')[0];
 
-export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) {
+const getDeleteBlockReason = (booking?: Booking | null) => {
+  if (!booking?.id) return '';
+  const paid = Math.round(Number(booking.amountPaid || 0));
+  const today = todayKey;
+
+  if (paid > 0) return 'Esta reserva tiene pagos registrados. Para mantener correcto el balance, usá Cancelar e indicá si hubo devolución.';
+  if (booking.checkIn <= today && booking.checkOut > today) return 'Esta reserva está en curso. Para conservar el historial y las finanzas, usá Cancelar.';
+  if (booking.checkOut <= today) return 'Esta reserva ya finalizó. No se puede eliminar porque forma parte del historial.';
+  return '';
+};
+
+export function BookingForm({ onSuccess, onCancel, onDelete, booking }: BookingFormProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [properties, setProperties] = useState<Property[]>([]);
@@ -37,11 +51,13 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
     amountTotal: String(booking?.amountTotal || booking?.amountPaid || ''),
     amountPaid: String(booking?.amountPaid || ''),
     refundIssued: Boolean(booking?.refundIssued),
+    refundAmount: String(booking?.refundAmount || ''),
     receivedBy: booking?.receivedBy || '',
     bookingSource: booking?.bookingSource || '',
     paymentMethod: booking?.paymentMethod || '',
     receiptFiles: parseStoredFiles(booking?.receiptFiles, booking?.receiptData, booking?.receiptName),
   });
+  const [dialog, setDialog] = useState<'cancel' | 'delete' | null>(null);
 
   useEffect(() => {
     const loadProperties = async () => {
@@ -89,6 +105,11 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
     : [];
   const selectedProperty = properties.find((property) => property.id === Number(formData.property_id));
   const selectedConflict = selectedProperty ? getConflictingBooking(selectedProperty.id) : undefined;
+  const isCancelling = formData.status === 'Cancelado';
+  const isChangingToCancelled = Boolean(booking?.id && booking.status !== 'Cancelado' && isCancelling);
+  const paidBeforeCancel = parseMoneyInput(formData.amountPaid);
+  const canSubmit = !loading && Boolean(formData.property_id) && (isCancelling || filteredProperties.length > 0 || Boolean(booking?.id));
+  const deleteBlockReason = getDeleteBlockReason(booking);
   const nights = dateDiffInNights(formData.checkIn, formData.checkOut);
   const suggestedTotal = useMemo(() => {
     const rate = selectedProperty?.nightlyRate ?? selectedProperty?.monthlyRate ?? 0;
@@ -123,7 +144,7 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
 
     setFormData(prev => ({
       ...prev,
-      [name]: type === 'checkbox' ? checked : value,
+      [name]: type === 'checkbox' ? checked : normalizeTextInput(name, value),
       ...(['guests', 'checkIn', 'checkOut'].includes(name) ? { property_id: '' } : {}),
     }));
   };
@@ -166,8 +187,35 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
     }));
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const buildPayload = (overrides: Partial<typeof formData> = {}) => {
+    const data = { ...formData, ...overrides };
+    const status = data.status;
+
+    return {
+      tenant: data.tenant,
+      property_id: data.property_id ? parseInt(data.property_id) : undefined,
+      guests: selectedGuests,
+      checkIn: data.checkIn,
+      checkOut: data.checkOut,
+      status,
+      amountTotal: status === 'Confirmado'
+        ? parseMoneyInput(data.amountTotal)
+        : parseMoneyInput(data.amountTotal || data.amountPaid),
+      amountPaid: status === 'Confirmado'
+        ? parseMoneyInput(data.amountTotal)
+        : parseMoneyInput(data.amountPaid),
+      refundIssued: status === 'Cancelado' ? data.refundIssued : false,
+      refundAmount: status === 'Cancelado' && data.refundIssued ? parseMoneyInput(data.refundAmount) : 0,
+      receivedBy: data.receivedBy.trim(),
+      bookingSource: data.bookingSource,
+      paymentMethod: data.paymentMethod,
+      receiptData: data.receiptFiles[0]?.data || '',
+      receiptName: data.receiptFiles[0]?.name || '',
+      receiptFiles: data.receiptFiles,
+    };
+  };
+
+  const saveBooking = async (overrides: Partial<typeof formData> = {}) => {
     setError('');
     setLoading(true);
 
@@ -190,39 +238,19 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
         return;
       }
 
-      if (!selectedProperty || !isPropertyReservable(selectedProperty)) {
+      if (!isCancelling && (!selectedProperty || !isPropertyReservable(selectedProperty))) {
         setError('Ese departamento no esta disponible para reservar. Cambia su estado a Disponible o elige otro.');
         setLoading(false);
         return;
       }
 
-      if (selectedConflict) {
+      if (!isCancelling && selectedConflict) {
         setError(`${getPropertyLabel(selectedProperty)} no se puede reservar en esas fechas. Esta ocupado hasta el ${formatDateDisplay(selectedConflict.checkOut)}.`);
         setLoading(false);
         return;
       }
 
-      const payload = {
-        tenant: formData.tenant,
-        property_id: formData.property_id ? parseInt(formData.property_id) : undefined,
-        guests: selectedGuests,
-        checkIn: formData.checkIn,
-        checkOut: formData.checkOut,
-        status: formData.status,
-        amountTotal: formData.status === 'Confirmado'
-          ? parseFloat(formData.amountTotal) || 0
-          : parseFloat(formData.amountTotal || formData.amountPaid) || 0,
-        amountPaid: formData.status === 'Confirmado'
-          ? parseFloat(formData.amountTotal) || 0
-          : parseFloat(formData.amountPaid) || 0,
-        refundIssued: formData.status === 'Cancelado' ? formData.refundIssued : false,
-        receivedBy: formData.receivedBy.trim(),
-        bookingSource: formData.bookingSource,
-        paymentMethod: formData.paymentMethod,
-        receiptData: formData.receiptFiles[0]?.data || '',
-        receiptName: formData.receiptFiles[0]?.name || '',
-        receiptFiles: formData.receiptFiles,
-      };
+      const payload = buildPayload(overrides);
       const savedBooking = booking?.id
         ? await updateBooking(booking.id, payload)
         : await createBooking(payload);
@@ -234,7 +262,58 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
     }
   };
 
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isChangingToCancelled) {
+      setDialog('cancel');
+      return;
+    }
+    await saveBooking();
+  };
+
+  const handleDelete = async () => {
+    if (!booking?.id) return;
+    setDialog('delete');
+  };
+
+  const confirmDelete = async () => {
+    if (!booking?.id) return;
+    if (deleteBlockReason) return;
+
+    setError('');
+    setLoading(true);
+    try {
+      await deleteBooking(booking.id);
+      if (onDelete) {
+        onDelete(booking);
+      } else {
+        onCancel();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error al eliminar reserva');
+    } finally {
+      setLoading(false);
+      setDialog(null);
+    }
+  };
+
+  const confirmCancel = async () => {
+    const refund = formData.refundIssued ? parseMoneyInput(formData.refundAmount) : 0;
+    if (refund > paidBeforeCancel) {
+      setError('La devolucion no puede superar el pago recibido.');
+      setDialog(null);
+      return;
+    }
+    setDialog(null);
+    await saveBooking({
+      status: 'Cancelado',
+      refundIssued: refund > 0,
+      refundAmount: refund > 0 ? String(refund) : '',
+    });
+  };
+
   return (
+    <>
     <form onSubmit={handleSubmit} className="space-y-4">
       {error && (
         <div className="p-3 bg-error-container text-on-error-container rounded-lg text-sm">
@@ -305,7 +384,7 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
           value={formData.property_id}
           onChange={handleChange}
           required
-          disabled={!selectedDates || filteredProperties.length === 0}
+          disabled={!selectedDates || (!isCancelling && !booking?.id && filteredProperties.length === 0)}
           className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:bg-surface-container-low disabled:text-on-surface-variant"
         >
           <option value="">
@@ -316,6 +395,11 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
               {getPropertyLabel(prop)} - hasta {prop.capacity || 1} persona{(prop.capacity || 1) > 1 ? 's' : ''}
             </option>
           ))}
+          {booking?.id && selectedProperty && !filteredProperties.some((property) => property.id === selectedProperty.id) && (
+            <option value={selectedProperty.id}>
+              {getPropertyLabel(selectedProperty)} - reserva actual
+            </option>
+          )}
           {unavailableByDate.map(({ property, conflict }) => (
             <option key={property.id} value={property.id} disabled>
               {getPropertyLabel(property)} - ocupado hasta {formatDateDisplay(conflict?.checkOut)}
@@ -332,7 +416,7 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
             Carga las fechas para ver solo los departamentos que se pueden reservar.
           </p>
         )}
-        {selectedDates && filteredProperties.length === 0 && (
+        {selectedDates && !isCancelling && filteredProperties.length === 0 && (
           <p className="text-xs text-error mt-1">
             No hay departamentos disponibles para {selectedGuests} huespedes en esas fechas.
           </p>
@@ -389,13 +473,12 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
         <div>
           <label className="block text-sm font-bold text-on-surface mb-1">Monto pagado total</label>
           <input
-            type="number"
+            type="text"
+            inputMode="numeric"
             name="amountTotal"
             value={formData.amountTotal}
             onChange={handleChange}
-            min="0"
-            step="0.01"
-            placeholder={suggestedTotal > 0 ? String(suggestedTotal) : '0.00'}
+            placeholder={suggestedTotal > 0 ? String(Math.round(suggestedTotal)) : '0'}
             className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
           />
         </div>
@@ -405,13 +488,12 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
         <div>
           <label className="block text-sm font-bold text-on-surface mb-1">Pago parcial registrado</label>
           <input
-            type="number"
+            type="text"
+            inputMode="numeric"
             name="amountPaid"
             value={formData.amountPaid}
             onChange={handleChange}
-            min="0"
-            step="0.01"
-            placeholder="0.00"
+            placeholder="0"
             className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
           />
         </div>
@@ -423,28 +505,43 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
             Pago recibido antes de cancelar
           </label>
           <input
-            type="number"
+            type="text"
+            inputMode="numeric"
             name="amountPaid"
             value={formData.amountPaid}
             onChange={handleChange}
-            min="0"
-            step="0.01"
             className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
           />
         </div>
       )}
 
       {formData.status === 'Cancelado' && Number(formData.amountPaid) > 0 && (
-        <label className="flex items-center gap-3 rounded-lg border border-outline-variant/30 p-3 text-sm font-semibold">
-          <input
-            type="checkbox"
-            name="refundIssued"
-            checked={formData.refundIssued}
-            onChange={handleChange}
-            className="h-4 w-4"
-          />
-          Se hizo devolucion del pago
-        </label>
+        <div className="space-y-3 rounded-lg border border-outline-variant/30 p-3">
+          <label className="flex items-center gap-3 text-sm font-semibold">
+            <input
+              type="checkbox"
+              name="refundIssued"
+              checked={formData.refundIssued}
+              onChange={handleChange}
+              className="h-4 w-4"
+            />
+            Se hizo devolucion del pago
+          </label>
+          {formData.refundIssued && (
+            <div>
+              <label className="block text-xs font-bold text-on-surface mb-1">Monto devuelto</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                name="refundAmount"
+                value={formData.refundAmount}
+                onChange={handleChange}
+                placeholder={String(paidBeforeCancel)}
+                className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
+              />
+            </div>
+          )}
+        </div>
       )}
 
       <div className="rounded-lg border border-outline-variant/30 p-4 space-y-4">
@@ -539,7 +636,17 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
         </div>
       </div>
 
-      <div className="flex gap-3 pt-4 border-t border-outline-variant/20">
+      <div className="flex flex-col sm:flex-row gap-3 pt-4 border-t border-outline-variant/20">
+        {booking?.id && (
+          <button
+            type="button"
+            onClick={handleDelete}
+            disabled={loading}
+            className="sm:w-auto px-4 py-2 border border-error/40 rounded-lg text-error font-bold hover:bg-error-container/20 disabled:opacity-50 transition-colors"
+          >
+            Eliminar
+          </button>
+        )}
         <button
           type="button"
           onClick={onCancel}
@@ -549,12 +656,98 @@ export function BookingForm({ onSuccess, onCancel, booking }: BookingFormProps) 
         </button>
         <button
           type="submit"
-          disabled={loading || filteredProperties.length === 0 || !formData.property_id}
+          disabled={!canSubmit}
           className="flex-1 px-4 py-2 bg-primary text-white rounded-lg font-bold hover:opacity-90 disabled:opacity-50 transition-all"
         >
           {loading ? 'Guardando...' : booking ? 'Guardar cambios' : 'Crear reserva'}
         </button>
       </div>
     </form>
+    {dialog && (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center px-4">
+        <div className="absolute inset-0 bg-black/50" onClick={() => setDialog(null)} />
+        <div className="relative w-full max-w-md rounded-xl border border-outline-variant/20 bg-white p-6 shadow-2xl">
+          {dialog === 'delete' ? (
+            <div className="space-y-5">
+              <div>
+                <h3 className="font-display text-xl font-bold text-on-surface">Eliminar reserva</h3>
+                {deleteBlockReason ? (
+                  <div className="mt-3 rounded-lg border border-error/20 bg-error-container/20 p-4">
+                    <p className="text-sm font-bold text-error">No se puede eliminar esta reserva</p>
+                    <p className="mt-2 text-sm text-on-surface-variant">{deleteBlockReason}</p>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-sm text-on-surface-variant">
+                    Vas a eliminar la reserva de <strong>{booking?.tenant}</strong>. Esta accion no se puede deshacer.
+                  </p>
+                )}
+              </div>
+              <div className="flex gap-3">
+                <button type="button" onClick={() => setDialog(null)} className="flex-1 rounded-lg border border-outline-variant/30 px-4 py-2 font-bold">
+                  {deleteBlockReason ? 'Entendido' : 'Volver'}
+                </button>
+                {!deleteBlockReason && (
+                  <button type="button" onClick={confirmDelete} disabled={loading} className="flex-1 rounded-lg bg-error px-4 py-2 font-bold text-white disabled:opacity-50">
+                    Eliminar
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-5">
+              <div>
+                <h3 className="font-display text-xl font-bold text-on-surface">Cancelar reserva</h3>
+                <p className="mt-2 text-sm text-on-surface-variant">
+                  Confirma si queres cancelar la reserva de <strong>{formData.tenant}</strong>.
+                  {paidBeforeCancel > 0 ? ' Como tiene pago registrado, indica si hubo devolucion.' : ' No tiene pagos registrados.'}
+                </p>
+              </div>
+
+              {paidBeforeCancel > 0 && (
+                <div className="rounded-lg bg-surface-container-low p-4">
+                  <p className="text-xs font-bold uppercase text-outline">Pago recibido</p>
+                  <p className="mt-1 font-display text-2xl font-bold text-primary">{formatMoney(paidBeforeCancel)}</p>
+                  <label className="mt-4 flex items-center gap-3 text-sm font-bold">
+                    <input
+                      type="checkbox"
+                      checked={formData.refundIssued}
+                      onChange={(event) => setFormData((prev) => ({
+                        ...prev,
+                        refundIssued: event.target.checked,
+                        refundAmount: event.target.checked ? prev.refundAmount || String(paidBeforeCancel) : '',
+                      }))}
+                      className="h-4 w-4"
+                    />
+                    Se hizo devolucion
+                  </label>
+                  {formData.refundIssued && (
+                    <div className="mt-3">
+                      <label className="block text-xs font-bold text-on-surface mb-1">Monto devuelto</label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={formData.refundAmount}
+                        onChange={(event) => setFormData((prev) => ({ ...prev, refundAmount: event.target.value }))}
+                        className="w-full rounded-lg border border-outline-variant/30 px-4 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <button type="button" onClick={() => setDialog(null)} className="flex-1 rounded-lg border border-outline-variant/30 px-4 py-2 font-bold">
+                  Volver
+                </button>
+                <button type="button" onClick={confirmCancel} disabled={loading} className="flex-1 rounded-lg bg-primary px-4 py-2 font-bold text-white disabled:opacity-50">
+                  Confirmar cancelacion
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+    </>
   );
 }
