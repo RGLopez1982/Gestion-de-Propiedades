@@ -15,6 +15,7 @@ import { createEvent, deleteEvent, EventItem, getEvents, updateEvent } from '../
 import { useModal } from '../hooks/useModal';
 import { Modal } from '../components/Modal';
 import { formatDateDisplay } from '../lib/dates';
+import { normalizeTextInput } from '../lib/text';
 
 type ImportedEvent = Pick<EventItem, 'title' | 'description' | 'date' | 'type'>;
 
@@ -218,7 +219,7 @@ export default function Events() {
 
   const handleChange = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     const { name, value } = event.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
+    setFormData((prev) => ({ ...prev, [name]: normalizeTextInput(name, value) }));
   };
 
   const resetForm = () => {
