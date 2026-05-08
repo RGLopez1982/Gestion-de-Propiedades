@@ -28,6 +28,8 @@ export default function Tenants() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [editingTenant, setEditingTenant] = useState<Tenant | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Tenant | null>(null);
+  const [notice, setNotice] = useState('');
   const modal = useModal();
 
   const loadTenants = async () => {
@@ -75,19 +77,22 @@ export default function Tenants() {
     modal.open();
   };
 
-  const handleDeleteTenant = async (event: React.MouseEvent, tenant: Tenant) => {
+  const handleDeleteTenant = (event: React.MouseEvent, tenant: Tenant) => {
     event.preventDefault();
     event.stopPropagation();
+    setDeleteTarget(tenant);
+  };
 
-    const confirmed = window.confirm(`Eliminar a ${tenant.name}? Esta accion no elimina sus reservas historicas.`);
-    if (!confirmed) return;
-
+  const confirmDeleteTenant = async () => {
+    if (!deleteTarget) return;
     try {
-      await deleteTenant(tenant.id);
-      setTenants((prev) => prev.filter((item) => item.id !== tenant.id));
+      await deleteTenant(deleteTarget.id);
+      setTenants((prev) => prev.filter((item) => item.id !== deleteTarget.id));
+      setDeleteTarget(null);
     } catch (error) {
       console.error('Error deleting tenant:', error);
-      window.alert('No se pudo eliminar el huesped. Intentalo nuevamente.');
+      setDeleteTarget(null);
+      setNotice('No se pudo eliminar el huesped. Intentalo nuevamente.');
     }
   };
 
@@ -97,7 +102,7 @@ export default function Tenants() {
 
     const phoneHref = getPhoneHref(tenant.phone);
     if (!phoneHref) {
-      window.alert('Este huesped no tiene telefono cargado.');
+      setNotice('Este huesped no tiene telefono cargado.');
       return;
     }
 
@@ -109,7 +114,7 @@ export default function Tenants() {
     event.stopPropagation();
 
     if (!tenant.phone) {
-      window.alert('Este huesped no tiene telefono cargado para WhatsApp.');
+      setNotice('Este huesped no tiene telefono cargado para WhatsApp.');
       return;
     }
 
@@ -118,13 +123,13 @@ export default function Tenants() {
       const booking = getMostRelevantBooking(tenantDetails.stays || []);
       const opened = openWhatsappWeb(tenantDetails.phone, buildReservationWhatsappMessage(tenantDetails, booking));
       if (!opened) {
-        window.alert('Este huesped no tiene telefono cargado para WhatsApp.');
+        setNotice('Este huesped no tiene telefono cargado para WhatsApp.');
       }
     } catch (error) {
       console.error('Error loading tenant reservation for WhatsApp:', error);
       const opened = openWhatsappWeb(tenant.phone, buildReservationWhatsappMessage(tenant));
       if (!opened) {
-        window.alert('No se pudo abrir WhatsApp. Revisa el telefono del huesped.');
+        setNotice('No se pudo abrir WhatsApp. Revisa el telefono del huesped.');
       }
     }
   };
@@ -170,6 +175,36 @@ export default function Tenants() {
           onSuccess={editingTenant ? handleTenantSaved : handleTenantCreated}
           onCancel={closeModal}
         />
+      </Modal>
+
+      <Modal
+        isOpen={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        title="Eliminar huesped"
+        size="sm"
+      >
+        <div className="space-y-5">
+          <p className="text-sm text-on-surface-variant">
+            Vas a eliminar a <strong>{deleteTarget?.name}</strong>. Esta accion no elimina sus reservas historicas.
+          </p>
+          <div className="flex gap-3">
+            <button onClick={() => setDeleteTarget(null)} className="flex-1 rounded-lg border border-outline-variant/30 px-4 py-2 font-bold">
+              Volver
+            </button>
+            <button onClick={confirmDeleteTenant} className="flex-1 rounded-lg bg-error px-4 py-2 font-bold text-white">
+              Eliminar
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal isOpen={Boolean(notice)} onClose={() => setNotice('')} title="Aviso" size="sm">
+        <div className="space-y-5">
+          <p className="text-sm text-on-surface-variant">{notice}</p>
+          <button onClick={() => setNotice('')} className="w-full rounded-lg bg-primary px-4 py-2 font-bold text-white">
+            Entendido
+          </button>
+        </div>
       </Modal>
 
       <section className="flex gap-4">
