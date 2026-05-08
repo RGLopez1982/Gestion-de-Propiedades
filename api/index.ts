@@ -237,6 +237,7 @@ const normalizeBookingMoney = (status: string, amountTotal: unknown, amountPaid:
 
 const OWNERS = ['Diego', 'Maru', 'Laura'];
 const isWithdrawalConcept = (concept: unknown) => String(concept || '').toLowerCase().startsWith('cobro de fondos');
+const isOwnerMatch = (value: unknown, owner: string) => String(value || '').trim().toUpperCase() === owner.toUpperCase();
 
 const validateTransactionInput = (data: {
   date?: string;
@@ -401,7 +402,7 @@ const createFinanceCycleFromTransactions = async (withdrawal: any, cycleTransact
   const baseShare = OWNERS.length > 0 ? balance / OWNERS.length : 0;
   const ownerSettlements = OWNERS.map((owner) => {
     const expensesPaid = cycleTransactions
-      .filter((transaction) => transaction.type === 'expense' && transaction.paidBy === owner)
+      .filter((transaction) => transaction.type === 'expense' && isOwnerMatch(transaction.paidBy, owner))
       .reduce((sum, transaction) => sum + Math.abs(Number(transaction.amount || 0)), 0);
     return {
       owner,
@@ -880,7 +881,7 @@ app.post('/api/finance/close-cycle', async (_req, res) => {
     const baseShare = OWNERS.length > 0 ? balance / OWNERS.length : 0;
     const ownerSettlements = OWNERS.map((owner) => {
       const expensesPaid = cycleTransactions
-        .filter((transaction: any) => transaction.type === 'expense' && transaction.paidBy === owner)
+        .filter((transaction: any) => transaction.type === 'expense' && isOwnerMatch(transaction.paidBy, owner))
         .reduce((sum: number, transaction: any) => sum + Math.abs(Number(transaction.amount || 0)), 0);
       return {
         owner,
