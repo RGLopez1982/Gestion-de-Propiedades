@@ -15,6 +15,21 @@ const AUTH_USER = process.env.AUTH_USER || 'admin';
 const AUTH_PASSWORD = process.env.AUTH_PASSWORD || 'admin123';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-session-secret-change-me';
 const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 12;
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+
+type TransactionRow = {
+  id: number;
+  date: string;
+  concept: string;
+  property_id?: number;
+  booking_id?: number;
+  amount: number;
+  status: string;
+  type: 'income' | 'expense';
+  paidBy?: string;
+  paymentMethod?: string;
+  property?: string;
+};
 
 // Middleware
 app.use(cors());
@@ -74,10 +89,21 @@ app.get('/api/health', (_req, res) => {
 
 app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body || {};
+  const key = req.ip || 'local';
+  const attempt = loginAttempts.get(key);
+  if (attempt && attempt.resetAt > Date.now() && attempt.count >= 5) {
+    return res.status(429).json({ error: 'Demasiados intentos. Espera unos minutos y volve a probar.' });
+  }
+
   if (username !== AUTH_USER || password !== AUTH_PASSWORD) {
+    const current = attempt && attempt.resetAt > Date.now()
+      ? attempt
+      : { count: 0, resetAt: Date.now() + 10 * 60 * 1000 };
+    loginAttempts.set(key, { count: current.count + 1, resetAt: current.resetAt });
     return res.status(401).json({ error: 'Usuario o contrasena incorrectos' });
   }
 
+  loginAttempts.delete(key);
   const token = createSessionToken(username);
   setSessionCookie(res, token);
   res.json({ authenticated: true, username, token });
@@ -151,6 +177,8 @@ db.exec(`
     amount REAL NOT NULL,
     status TEXT DEFAULT 'Completado',
     type TEXT DEFAULT 'income',
+    paidBy TEXT,
+    paymentMethod TEXT,
     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(property_id) REFERENCES properties(id)
   );
@@ -166,6 +194,7 @@ db.exec(`
     amountTotal REAL DEFAULT 0,
     amountPaid REAL DEFAULT 0,
     refundIssued INTEGER DEFAULT 0,
+    refundAmount REAL DEFAULT 0,
     receivedBy TEXT,
     bookingSource TEXT,
     paymentMethod TEXT,
@@ -191,6 +220,29 @@ db.exec(`
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
     updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS finance_cycles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    closedAt TEXT NOT NULL,
+    periodLabel TEXT NOT NULL,
+    income REAL NOT NULL DEFAULT 0,
+    expense REAL NOT NULL DEFAULT 0,
+    balance REAL NOT NULL DEFAULT 0,
+    ownerSettlements TEXT NOT NULL DEFAULT '[]',
+    paymentTotals TEXT NOT NULL DEFAULT '[]',
+    expenseRows TEXT NOT NULL DEFAULT '[]',
+    transactionCount INTEGER NOT NULL DEFAULT 0,
+    withdrawalTransactionId INTEGER,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS finance_cycle_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cycle_id INTEGER NOT NULL,
+    transaction_id INTEGER NOT NULL,
+    FOREIGN KEY(cycle_id) REFERENCES finance_cycles(id),
+    FOREIGN KEY(transaction_id) REFERENCES transactions(id)
   );
 `);
 
@@ -223,14 +275,76 @@ const normalizePropertyRow = (property: any) => ({
   images: parseImages(property.images, property.image),
 });
 
+const roundMoney = (value: unknown) => {
+  const numeric = Number(String(value ?? 0).replace(',', '.'));
+  return Number.isFinite(numeric) ? Math.round(numeric) : 0;
+};
+
+const upperText = (value: unknown) => {
+  if (typeof value !== 'string') return value;
+  return value.trim().toLocaleUpperCase('es-AR');
+};
+
+const getApproxPayloadSize = (value: unknown) => JSON.stringify(value || '').length;
+const allowedPropertyStatuses = ['Disponible', 'Ocupado', 'Mantenimiento'];
+const allowedBookingStatuses = ['Confirmado', 'Pendiente', 'Cancelado'];
+
+const validatePropertyInput = (data: {
+  name?: string;
+  department?: string;
+  location?: string;
+  status?: string;
+  nightlyRate?: unknown;
+  monthlyRate?: unknown;
+  images?: unknown;
+}) => {
+  if (!String(data.name || '').trim()) return 'La propiedad debe tener nombre';
+  if (!String(data.department || data.location || '').trim()) return 'La propiedad debe tener departamento';
+  if (!allowedPropertyStatuses.includes(String(data.status || 'Disponible'))) return 'Estado de propiedad invalido';
+  if (roundMoney(data.nightlyRate ?? data.monthlyRate) <= 0) return 'El precio por noche debe ser mayor a cero';
+  if (Array.isArray(data.images) && data.images.length > 12) return 'Podes cargar hasta 12 imagenes por propiedad';
+  if (getApproxPayloadSize(data.images) > 8 * 1024 * 1024) return 'Las imagenes de la propiedad superan el limite local de 8 MB';
+  return null;
+};
+
+const validateBookingInput = (data: {
+  tenant?: string;
+  property_id?: unknown;
+  guests?: unknown;
+  status?: string;
+  amountTotal?: unknown;
+  amountPaid?: unknown;
+  refundAmount?: unknown;
+  receiptFiles?: unknown;
+}) => {
+  if (!String(data.tenant || '').trim()) return 'La reserva debe tener huesped';
+  if (!allowedBookingStatuses.includes(String(data.status))) return 'Estado de reserva invalido';
+  if (!data.property_id && data.status !== 'Cancelado') return 'La reserva debe tener departamento';
+  if (Math.min(Math.max(Number(data.guests) || 1, 1), 4) !== Number(data.guests || 1)) return 'La cantidad de huespedes debe estar entre 1 y 4';
+  const total = roundMoney(data.amountTotal);
+  const paid = roundMoney(data.amountPaid);
+  if (total < 0 || paid < 0) return 'Los importes no pueden ser negativos';
+  if (paid > total && total > 0) return 'El pago recibido no puede superar el total';
+  if (roundMoney(data.refundAmount) > paid) return 'La devolucion no puede superar el pago recibido';
+  if (getApproxPayloadSize(data.receiptFiles) > 8 * 1024 * 1024) return 'Los comprobantes superan el limite local de 8 MB';
+  return null;
+};
+
+db.prepare('UPDATE properties SET monthlyRate = ROUND(monthlyRate), nightlyRate = ROUND(nightlyRate)').run();
+db.prepare('UPDATE bookings SET amountTotal = ROUND(amountTotal), amountPaid = ROUND(amountPaid)').run();
+db.prepare('UPDATE transactions SET amount = ROUND(amount)').run();
+
 ensureColumn('properties', 'department', 'TEXT');
 ensureColumn('properties', 'nightlyRate', 'REAL');
 ensureColumn('properties', 'capacity', 'INTEGER DEFAULT 1');
 ensureColumn('properties', 'images', 'TEXT');
 ensureColumn('transactions', 'booking_id', 'INTEGER');
+ensureColumn('transactions', 'paidBy', 'TEXT');
+ensureColumn('transactions', 'paymentMethod', 'TEXT');
 ensureColumn('bookings', 'amountTotal', 'REAL DEFAULT 0');
 ensureColumn('bookings', 'amountPaid', 'REAL DEFAULT 0');
 ensureColumn('bookings', 'refundIssued', 'INTEGER DEFAULT 0');
+ensureColumn('bookings', 'refundAmount', 'REAL DEFAULT 0');
 ensureColumn('bookings', 'receivedBy', 'TEXT');
 ensureColumn('bookings', 'bookingSource', 'TEXT');
 ensureColumn('bookings', 'paymentMethod', 'TEXT');
@@ -241,51 +355,248 @@ ensureColumn('tenants', 'source', 'TEXT');
 ensureColumn('tenants', 'tags', 'TEXT');
 ensureColumn('tenants', 'notes', 'TEXT');
 
-const normalizeBookingMoney = (status: string, amountTotal: unknown, amountPaid: unknown, refundIssued: unknown) => {
-  const total = Math.max(Number(amountTotal) || 0, 0);
-  const paid = Math.max(Number(amountPaid) || 0, 0);
+const normalizeBookingMoney = (status: string, amountTotal: unknown, amountPaid: unknown, refundIssued: unknown, refundAmount: unknown = 0) => {
+  const total = Math.max(roundMoney(amountTotal), 0);
+  const paid = Math.max(roundMoney(amountPaid), 0);
   const normalizedPaid = status === 'Confirmado' ? total : Math.min(paid, total || paid);
+  const refund = Math.min(Math.max(roundMoney(refundAmount), 0), normalizedPaid);
 
   return {
     total,
     paid: normalizedPaid,
-    refunded: status === 'Cancelado' && Boolean(refundIssued),
+    refunded: status === 'Cancelado' && Boolean(refundIssued) && refund > 0,
+    refundAmount: status === 'Cancelado' && Boolean(refundIssued) ? refund : 0,
   };
 };
 
+const OWNERS = ['Diego', 'Maru', 'Laura'];
+const isWithdrawalConcept = (concept: unknown) => String(concept || '').toLowerCase().startsWith('cobro de fondos');
+
+const validateTransactionInput = (data: {
+  date?: string;
+  concept?: string;
+  amount?: unknown;
+  type?: string;
+  paidBy?: string;
+  paymentMethod?: string;
+}) => {
+  if (!data.date || !/^\d{4}-\d{2}-\d{2}$/.test(data.date)) return 'La transaccion debe tener una fecha valida';
+  if (!String(data.concept || '').trim()) return 'La transaccion debe tener un concepto';
+  if (!['income', 'expense'].includes(String(data.type))) return 'Tipo de transaccion invalido';
+  if (roundMoney(data.amount) <= 0) return 'El monto debe ser mayor a cero';
+  if (data.type === 'expense' && !String(data.paidBy || '').trim() && !isWithdrawalConcept(data.concept)) {
+    return 'Los gastos deben indicar quien los pago';
+  }
+  if (data.type === 'income' && !String(data.paymentMethod || '').trim()) {
+    return 'Los ingresos deben indicar el medio de pago';
+  }
+  return null;
+};
+
+const getPendingPaymentBookings = () => db.prepare(`
+  SELECT id, tenant, amountTotal, amountPaid, COALESCE(properties.department, properties.name) as property
+  FROM bookings
+  LEFT JOIN properties ON bookings.property_id = properties.id
+  WHERE status != 'Cancelado'
+    AND ROUND(COALESCE(amountTotal, 0)) > 0
+    AND ROUND(COALESCE(amountPaid, 0)) < ROUND(COALESCE(amountTotal, 0))
+  ORDER BY checkIn ASC
+`).all() as Array<{ id: number; tenant: string; property?: string; amountTotal: number; amountPaid: number }>;
+
+const buildCycleSnapshot = () => {
+  const lastCycle = db.prepare('SELECT withdrawalTransactionId FROM finance_cycles ORDER BY id DESC LIMIT 1').get() as
+    | { withdrawalTransactionId?: number }
+    | undefined;
+  const sinceTransactionId = Number(lastCycle?.withdrawalTransactionId || 0);
+  const cycleTransactions = db.prepare(`
+    SELECT transactions.*, COALESCE(properties.department, properties.name) as property
+    FROM transactions
+    LEFT JOIN properties ON transactions.property_id = properties.id
+    WHERE transactions.id > ?
+      AND lower(transactions.concept) NOT LIKE 'cobro de fondos%'
+    ORDER BY transactions.id ASC
+  `).all(sinceTransactionId) as TransactionRow[];
+  const income = cycleTransactions
+    .filter((transaction) => transaction.type === 'income')
+    .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+  const expense = cycleTransactions
+    .filter((transaction) => transaction.type === 'expense')
+    .reduce((sum, transaction) => sum + Math.abs(Number(transaction.amount || 0)), 0);
+  const balance = income - expense;
+  const baseShare = OWNERS.length > 0 ? balance / OWNERS.length : 0;
+  const ownerSettlements = OWNERS.map((owner) => {
+    const expensesPaid = cycleTransactions
+      .filter((transaction) => transaction.type === 'expense' && transaction.paidBy === owner)
+      .reduce((sum, transaction) => sum + Math.abs(Number(transaction.amount || 0)), 0);
+    return {
+      owner,
+      expensesPaid: roundMoney(expensesPaid),
+      profitShare: roundMoney(baseShare),
+      payout: roundMoney(baseShare + expensesPaid),
+    };
+  });
+  const paymentMap = cycleTransactions
+    .filter((transaction) => transaction.type === 'income')
+    .reduce<Record<string, number>>((acc, transaction) => {
+      const method = transaction.paymentMethod || 'Sin especificar';
+      acc[method] = (acc[method] || 0) + Number(transaction.amount || 0);
+      return acc;
+    }, {});
+  const paymentTotals = Object.entries(paymentMap).map(([method, amount]) => ({ method, amount: roundMoney(amount) }));
+  const expenseRows = cycleTransactions
+    .filter((transaction) => transaction.type === 'expense')
+    .map((transaction) => ({
+      concept: transaction.concept,
+      amount: roundMoney(Math.abs(Number(transaction.amount || 0))),
+      paidBy: transaction.paidBy || 'Sin asignar',
+    }));
+  const firstDate = cycleTransactions[0]?.date || new Date().toISOString().split('T')[0];
+  const closedAt = new Date().toISOString().split('T')[0];
+
+  return {
+    sinceTransactionId,
+    cycleTransactions,
+    closedAt,
+    periodLabel: `${formatDateDisplay(firstDate)} a ${formatDateDisplay(closedAt)}`,
+    income: roundMoney(income),
+    expense: roundMoney(expense),
+    balance: roundMoney(balance),
+    ownerSettlements,
+    paymentTotals,
+    expenseRows,
+  };
+};
+
+const createFinanceCycleFromTransactions = (withdrawal: TransactionRow, cycleTransactions: TransactionRow[]) => {
+  if (cycleTransactions.length === 0) return null;
+
+  const income = cycleTransactions
+    .filter((transaction) => transaction.type === 'income')
+    .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+  const expense = cycleTransactions
+    .filter((transaction) => transaction.type === 'expense')
+    .reduce((sum, transaction) => sum + Math.abs(Number(transaction.amount || 0)), 0);
+  const balance = income - expense;
+  const baseShare = OWNERS.length > 0 ? balance / OWNERS.length : 0;
+  const ownerSettlements = OWNERS.map((owner) => {
+    const expensesPaid = cycleTransactions
+      .filter((transaction) => transaction.type === 'expense' && transaction.paidBy === owner)
+      .reduce((sum, transaction) => sum + Math.abs(Number(transaction.amount || 0)), 0);
+    return {
+      owner,
+      expensesPaid: roundMoney(expensesPaid),
+      profitShare: roundMoney(baseShare),
+      payout: roundMoney(baseShare + expensesPaid),
+    };
+  });
+  const paymentMap = cycleTransactions
+    .filter((transaction) => transaction.type === 'income')
+    .reduce<Record<string, number>>((acc, transaction) => {
+      const method = transaction.paymentMethod || 'Sin especificar';
+      acc[method] = (acc[method] || 0) + Number(transaction.amount || 0);
+      return acc;
+    }, {});
+  const paymentTotals = Object.entries(paymentMap).map(([method, amount]) => ({ method, amount: roundMoney(amount) }));
+  const expenseRows = cycleTransactions
+    .filter((transaction) => transaction.type === 'expense')
+    .map((transaction) => ({
+      concept: transaction.concept,
+      amount: roundMoney(Math.abs(Number(transaction.amount || 0))),
+      paidBy: transaction.paidBy || 'Sin asignar',
+    }));
+
+  const cycle = db.prepare(`
+    INSERT INTO finance_cycles (
+      closedAt, periodLabel, income, expense, balance, ownerSettlements, paymentTotals, expenseRows, transactionCount, withdrawalTransactionId
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    withdrawal.date,
+    `${formatDateDisplay(cycleTransactions[0].date)} a ${formatDateDisplay(withdrawal.date)}`,
+    roundMoney(income),
+    roundMoney(expense),
+    roundMoney(balance),
+    JSON.stringify(ownerSettlements),
+    JSON.stringify(paymentTotals),
+    JSON.stringify(expenseRows),
+    cycleTransactions.length,
+    withdrawal.id
+  );
+
+  const insertItem = db.prepare('INSERT INTO finance_cycle_items (cycle_id, transaction_id) VALUES (?, ?)');
+  cycleTransactions.forEach((transaction) => insertItem.run(cycle.lastInsertRowid, transaction.id));
+  return cycle.lastInsertRowid;
+};
+
+const backfillLegacyFinanceCycles = () => {
+  const legacyWithdrawals = db.prepare(`
+    SELECT transactions.*, COALESCE(properties.department, properties.name) as property
+    FROM transactions
+    LEFT JOIN properties ON transactions.property_id = properties.id
+    WHERE lower(transactions.concept) LIKE 'cobro de fondos%'
+      AND transactions.id NOT IN (
+        SELECT COALESCE(withdrawalTransactionId, 0) FROM finance_cycles
+      )
+    ORDER BY transactions.id ASC
+  `).all() as TransactionRow[];
+
+  legacyWithdrawals.forEach((withdrawal) => {
+    const previousWithdrawal = db.prepare(`
+      SELECT id FROM transactions
+      WHERE lower(concept) LIKE 'cobro de fondos%'
+        AND id < ?
+      ORDER BY id DESC
+      LIMIT 1
+    `).get(withdrawal.id) as { id: number } | undefined;
+    const previousWithdrawalId = previousWithdrawal?.id || 0;
+    const cycleTransactions = db.prepare(`
+      SELECT transactions.*, COALESCE(properties.department, properties.name) as property
+      FROM transactions
+      LEFT JOIN properties ON transactions.property_id = properties.id
+      WHERE transactions.id > ?
+        AND transactions.id < ?
+        AND lower(transactions.concept) NOT LIKE 'cobro de fondos%'
+      ORDER BY transactions.id ASC
+    `).all(previousWithdrawalId, withdrawal.id) as TransactionRow[];
+
+    createFinanceCycleFromTransactions(withdrawal, cycleTransactions);
+  });
+};
+
+backfillLegacyFinanceCycles();
+
 const syncBookingTransactions = (
   bookingId: number | bigint,
-  booking: { tenant: string; property_id?: number; status: string; amountTotal?: number; amountPaid?: number; refundIssued?: boolean }
+  booking: { tenant: string; property_id?: number; status: string; amountTotal?: number; amountPaid?: number; refundIssued?: boolean; refundAmount?: number; paymentMethod?: string }
 ) => {
   db.prepare('DELETE FROM transactions WHERE booking_id = ?').run(bookingId);
 
-  const { total, paid, refunded } = normalizeBookingMoney(booking.status, booking.amountTotal, booking.amountPaid, booking.refundIssued);
+  const { total, paid, refunded, refundAmount } = normalizeBookingMoney(booking.status, booking.amountTotal, booking.amountPaid, booking.refundIssued, booking.refundAmount);
   const date = new Date().toISOString().split('T')[0];
   const propertyId = booking.property_id || null;
 
   if (booking.status === 'Confirmado' && total > 0) {
     db.prepare(
-      'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).run(date, `Reserva confirmada - ${booking.tenant}`, propertyId, bookingId, total, 'Completado', 'income');
+      'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type, paymentMethod) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(date, `Reserva confirmada - ${booking.tenant}`, propertyId, bookingId, total, 'Completado', 'income', booking.paymentMethod || null);
     return;
   }
 
   if (booking.status === 'Pendiente' && paid > 0) {
     db.prepare(
-      'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).run(date, `Pago parcial reserva - ${booking.tenant}`, propertyId, bookingId, paid, 'Completado', 'income');
+      'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type, paymentMethod) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(date, `Pago parcial reserva - ${booking.tenant}`, propertyId, bookingId, paid, 'Completado', 'income', booking.paymentMethod || null);
     return;
   }
 
   if (booking.status === 'Cancelado' && paid > 0) {
     db.prepare(
-      'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).run(date, `Pago reserva cancelada - ${booking.tenant}`, propertyId, bookingId, paid, 'Completado', 'income');
+      'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type, paymentMethod) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(date, `Pago reserva cancelada - ${booking.tenant}`, propertyId, bookingId, paid, 'Completado', 'income', booking.paymentMethod || null);
 
     if (refunded) {
       db.prepare(
         'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(date, `Devolucion reserva cancelada - ${booking.tenant}`, propertyId, bookingId, paid, 'Completado', 'expense');
+      ).run(date, `Devolucion reserva cancelada - ${booking.tenant}`, propertyId, bookingId, refundAmount, 'Completado', 'expense');
     }
   }
 };
@@ -335,21 +646,55 @@ const getReservablePropertyError = (propertyId: unknown) => {
   return null;
 };
 
-const ensureTenantFromBooking = (name: string) => {
-  const normalizedName = name.trim();
+const ensureTenantFromBooking = (
+  name: string,
+  booking: { property_id?: number; checkIn?: string; bookingSource?: string } = {}
+) => {
+  const normalizedName = upperText(name) as string;
   if (!normalizedName) return;
 
-  const existing = db.prepare('SELECT id FROM tenants WHERE lower(name) = lower(?)').get(normalizedName);
+  const source = (upperText(booking.bookingSource) as string) || 'RESERVA';
+  const since = booking.checkIn || new Date().toISOString().split('T')[0];
+  const propertyId = booking.property_id || null;
+  const existing = db.prepare(
+    'SELECT id FROM tenants WHERE lower(trim(name)) = lower(trim(?))'
+  ).get(normalizedName) as { id: number } | undefined;
+
   if (!existing) {
     db.prepare(
-      'INSERT INTO tenants (name, status, source, since) VALUES (?, ?, ?, ?)'
-    ).run(normalizedName, 'HUESPED', 'Reserva', new Date().toISOString().split('T')[0]);
+      'INSERT INTO tenants (name, property_id, status, source, since) VALUES (?, ?, ?, ?, ?)'
+    ).run(normalizedName, propertyId, 'HUESPED', source, since);
+    return;
   }
+
+  db.prepare(`
+    UPDATE tenants
+    SET
+      status = CASE
+        WHEN status IS NULL OR trim(status) = '' OR status = 'CONTACTO' THEN 'HUESPED'
+        ELSE status
+      END,
+      source = CASE
+        WHEN source IS NULL OR trim(source) = '' THEN ?
+        ELSE source
+      END,
+      since = CASE
+        WHEN since IS NULL OR trim(since) = '' OR since > ? THEN ?
+        ELSE since
+      END,
+      property_id = COALESCE(property_id, ?)
+    WHERE id = ?
+  `).run(source, since, since, propertyId, existing.id);
 };
 
 const syncExistingBookingTenants = () => {
-  const bookingTenants = db.prepare('SELECT DISTINCT tenant FROM bookings WHERE tenant IS NOT NULL AND trim(tenant) != ?').all('') as Array<{ tenant: string }>;
-  bookingTenants.forEach((item) => ensureTenantFromBooking(item.tenant));
+  const bookingTenants = db.prepare(`
+    SELECT tenant, property_id, MIN(checkIn) as checkIn, MAX(bookingSource) as bookingSource
+    FROM bookings
+    WHERE tenant IS NOT NULL AND trim(tenant) != ?
+    GROUP BY lower(trim(tenant))
+  `).all('') as Array<{ tenant: string; property_id?: number; checkIn?: string; bookingSource?: string }>;
+  bookingTenants.forEach((item) => ensureTenantFromBooking(item.tenant, item));
 };
 
 syncExistingBookingTenants();
@@ -375,7 +720,23 @@ const validateBookingDates = (checkIn: string, checkOut: string, allowPastCheckI
 // ===== PROPERTIES =====
 app.get('/api/properties', (req, res) => {
   try {
-    const properties = db.prepare('SELECT * FROM properties ORDER BY id DESC').all();
+    const today = new Date().toISOString().split('T')[0];
+    const properties = db.prepare(`
+      SELECT properties.*,
+        CASE
+          WHEN properties.status != 'Disponible' THEN properties.status
+          WHEN EXISTS (
+            SELECT 1 FROM bookings
+            WHERE bookings.property_id = properties.id
+              AND bookings.status != 'Cancelado'
+              AND bookings.checkIn <= ?
+              AND bookings.checkOut > ?
+          ) THEN 'Ocupado'
+          ELSE 'Disponible'
+        END as availabilityStatus
+      FROM properties
+      ORDER BY id DESC
+    `).all(today, today);
     res.json(properties.map(normalizePropertyRow));
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
@@ -395,13 +756,16 @@ app.get('/api/properties/:id', (req, res) => {
 app.post('/api/properties', (req, res) => {
   try {
     const { name, department, location, status, nightlyRate, monthlyRate, capacity, images, image } = req.body;
+    const validationError = validatePropertyInput({ name, department, location, status, nightlyRate, monthlyRate, images });
+    if (validationError) return res.status(400).json({ error: validationError });
     const normalizedImages = Array.isArray(images) ? images : image ? [image] : [];
-    const normalizedDepartment = department || location;
-    const normalizedNightlyRate = Number(nightlyRate ?? monthlyRate) || 0;
+    const normalizedName = upperText(name) as string;
+    const normalizedDepartment = (upperText(department || location) as string) || '';
+    const normalizedNightlyRate = roundMoney(nightlyRate ?? monthlyRate);
     const result = db.prepare(
       'INSERT INTO properties (name, location, status, monthlyRate, image, department, nightlyRate, capacity, images) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(
-      name,
+      normalizedName,
       normalizedDepartment,
       status || 'Disponible',
       normalizedNightlyRate,
@@ -414,6 +778,7 @@ app.post('/api/properties', (req, res) => {
     res.json({
       id: result.lastInsertRowid,
       ...req.body,
+      name: normalizedName,
       location: normalizedDepartment,
       monthlyRate: normalizedNightlyRate,
       department: normalizedDepartment,
@@ -430,13 +795,16 @@ app.post('/api/properties', (req, res) => {
 app.put('/api/properties/:id', (req, res) => {
   try {
     const { name, department, location, status, nightlyRate, monthlyRate, capacity, images, image } = req.body;
+    const validationError = validatePropertyInput({ name, department, location, status, nightlyRate, monthlyRate, images });
+    if (validationError) return res.status(400).json({ error: validationError });
     const normalizedImages = Array.isArray(images) ? images : image ? [image] : [];
-    const normalizedDepartment = department || location;
-    const normalizedNightlyRate = Number(nightlyRate ?? monthlyRate) || 0;
+    const normalizedName = upperText(name) as string;
+    const normalizedDepartment = (upperText(department || location) as string) || '';
+    const normalizedNightlyRate = roundMoney(nightlyRate ?? monthlyRate);
     db.prepare(
       'UPDATE properties SET name=?, location=?, status=?, monthlyRate=?, image=?, department=?, nightlyRate=?, capacity=?, images=? WHERE id=?'
     ).run(
-      name,
+      normalizedName,
       normalizedDepartment,
       status,
       normalizedNightlyRate,
@@ -450,6 +818,7 @@ app.put('/api/properties/:id', (req, res) => {
     res.json({
       id: parseInt(req.params.id),
       ...req.body,
+      name: normalizedName,
       location: normalizedDepartment,
       monthlyRate: normalizedNightlyRate,
       department: normalizedDepartment,
@@ -549,10 +918,18 @@ app.get('/api/tenants/:id', (req, res) => {
 app.post('/api/tenants', (req, res) => {
   try {
     const { name, email, phone, status, since, avatar, source, tags, notes } = req.body;
+    const normalizedTenant = {
+      name: upperText(name),
+      email: upperText(email),
+      phone: upperText(phone),
+      source: upperText(source),
+      tags: upperText(tags),
+      notes: upperText(notes),
+    };
     const result = db.prepare(
       'INSERT INTO tenants (name, email, phone, status, since, avatar, source, tags, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(name, email, phone, status, since, avatar, source, tags, notes);
-    res.json({ id: result.lastInsertRowid, ...req.body });
+    ).run(normalizedTenant.name, normalizedTenant.email, normalizedTenant.phone, status, since, avatar, normalizedTenant.source, normalizedTenant.tags, normalizedTenant.notes);
+    res.json({ id: result.lastInsertRowid, ...req.body, ...normalizedTenant });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
   }
@@ -561,14 +938,22 @@ app.post('/api/tenants', (req, res) => {
 app.put('/api/tenants/:id', (req, res) => {
   try {
     const { name, email, phone, status, since, source, tags, notes } = req.body;
+    const normalizedTenant = {
+      name: upperText(name) as string,
+      email: upperText(email),
+      phone: upperText(phone),
+      source: upperText(source),
+      tags: upperText(tags),
+      notes: upperText(notes),
+    };
     const existing = db.prepare('SELECT name FROM tenants WHERE id = ?').get(req.params.id) as { name: string } | undefined;
     db.prepare(
       'UPDATE tenants SET name=?, email=?, phone=?, status=?, since=?, source=?, tags=?, notes=? WHERE id=?'
-    ).run(name, email, phone, status, since, source, tags, notes, req.params.id);
-    if (existing?.name && existing.name !== name) {
-      db.prepare('UPDATE bookings SET tenant=? WHERE lower(tenant)=lower(?)').run(name, existing.name);
+    ).run(normalizedTenant.name, normalizedTenant.email, normalizedTenant.phone, status, since, normalizedTenant.source, normalizedTenant.tags, normalizedTenant.notes, req.params.id);
+    if (existing?.name && existing.name !== normalizedTenant.name) {
+      db.prepare('UPDATE bookings SET tenant=? WHERE lower(tenant)=lower(?)').run(normalizedTenant.name, existing.name);
     }
-    res.json({ id: parseInt(req.params.id), ...req.body });
+    res.json({ id: parseInt(req.params.id), ...req.body, ...normalizedTenant });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
   }
@@ -600,10 +985,19 @@ app.get('/api/transactions', (req, res) => {
 
 app.post('/api/transactions', (req, res) => {
   try {
-    const { date, concept, property_id, booking_id, amount, status, type } = req.body;
+    const { date, concept, property_id, booking_id, amount, status, type, paidBy, paymentMethod } = req.body;
+    if (isWithdrawalConcept(concept)) {
+      return res.status(400).json({ error: 'Usa el boton Cobrar para cerrar el ciclo con controles.' });
+    }
+    const validationError = validateTransactionInput({ date, concept, amount, type, paidBy, paymentMethod });
+    if (validationError) return res.status(400).json({ error: validationError });
+
+    const normalizedConcept = upperText(concept);
+    const normalizedPaidBy = upperText(paidBy);
+    const normalizedPaymentMethod = upperText(paymentMethod);
     const result = db.prepare(
-      'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).run(date, concept, property_id, booking_id, amount, status, type);
+      'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type, paidBy, paymentMethod) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(date, normalizedConcept, property_id, booking_id, roundMoney(amount), status, type, normalizedPaidBy || null, normalizedPaymentMethod || null);
     const transaction = db.prepare(`
       SELECT transactions.*, COALESCE(properties.department, properties.name) as property
       FROM transactions
@@ -643,6 +1037,7 @@ app.post('/api/bookings', (req, res) => {
       amountTotal,
       amountPaid,
       refundIssued,
+      refundAmount,
       receivedBy,
       bookingSource,
       paymentMethod,
@@ -650,6 +1045,12 @@ app.post('/api/bookings', (req, res) => {
       receiptName,
       receiptFiles,
     } = req.body;
+    const normalizedTenant = upperText(tenant) as string;
+    const normalizedReceivedBy = upperText(receivedBy);
+    const normalizedBookingSource = upperText(bookingSource);
+    const normalizedPaymentMethod = upperText(paymentMethod);
+    const bookingValidationError = validateBookingInput({ tenant, property_id, guests, status, amountTotal, amountPaid, refundAmount, receiptFiles });
+    if (bookingValidationError) return res.status(400).json({ error: bookingValidationError });
     const dateError = validateBookingDates(checkIn, checkOut);
     if (dateError) {
       return res.status(400).json({ error: dateError });
@@ -662,23 +1063,25 @@ app.post('/api/bookings', (req, res) => {
       }
     }
 
-    const conflict = findBookingConflict(Number(property_id), checkIn, checkOut);
-    if (conflict) {
-      return res.status(409).json({
-        error: `Departamento ocupado hasta ${formatDateDisplay(conflict.checkOut)}`,
-        conflict,
-      });
+    if (status !== 'Cancelado') {
+      const conflict = findBookingConflict(Number(property_id), checkIn, checkOut);
+      if (conflict) {
+        return res.status(409).json({
+          error: `Departamento ocupado hasta ${formatDateDisplay(conflict.checkOut)}`,
+          conflict,
+        });
+      }
     }
 
-    const money = normalizeBookingMoney(status, amountTotal, amountPaid, refundIssued);
-    ensureTenantFromBooking(tenant);
+    const money = normalizeBookingMoney(status, amountTotal, amountPaid, refundIssued, refundAmount);
+    ensureTenantFromBooking(normalizedTenant, { property_id, checkIn, bookingSource: normalizedBookingSource as string });
     const result = db.prepare(
       `INSERT INTO bookings (
-        tenant, property_id, guests, checkIn, checkOut, status, amountTotal, amountPaid, refundIssued,
+        tenant, property_id, guests, checkIn, checkOut, status, amountTotal, amountPaid, refundIssued, refundAmount,
         receivedBy, bookingSource, paymentMethod, receiptData, receiptName, receiptFiles
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
-      tenant,
+      normalizedTenant,
       property_id,
       guests,
       checkIn,
@@ -687,20 +1090,23 @@ app.post('/api/bookings', (req, res) => {
       money.total,
       money.paid,
       money.refunded ? 1 : 0,
-      receivedBy || null,
-      bookingSource || null,
-      paymentMethod || null,
+      money.refundAmount,
+      normalizedReceivedBy || null,
+      normalizedBookingSource || null,
+      normalizedPaymentMethod || null,
       receiptData || null,
       receiptName || null,
       Array.isArray(receiptFiles) ? JSON.stringify(receiptFiles) : receiptFiles || null
     );
     syncBookingTransactions(result.lastInsertRowid, {
-      tenant,
+      tenant: normalizedTenant,
       property_id,
       status,
       amountTotal: money.total,
       amountPaid: money.paid,
       refundIssued: money.refunded,
+      refundAmount: money.refundAmount,
+      paymentMethod: normalizedPaymentMethod as string,
     });
     res.json(getBookingById(result.lastInsertRowid));
   } catch (error) {
@@ -720,6 +1126,7 @@ app.put('/api/bookings/:id', (req, res) => {
       amountTotal,
       amountPaid,
       refundIssued,
+      refundAmount,
       receivedBy,
       bookingSource,
       paymentMethod,
@@ -727,6 +1134,12 @@ app.put('/api/bookings/:id', (req, res) => {
       receiptName,
       receiptFiles,
     } = req.body;
+    const normalizedTenant = upperText(tenant) as string;
+    const normalizedReceivedBy = upperText(receivedBy);
+    const normalizedBookingSource = upperText(bookingSource);
+    const normalizedPaymentMethod = upperText(paymentMethod);
+    const bookingValidationError = validateBookingInput({ tenant, property_id, guests, status, amountTotal, amountPaid, refundAmount, receiptFiles });
+    if (bookingValidationError) return res.status(400).json({ error: bookingValidationError });
     const dateError = validateBookingDates(checkIn, checkOut, true);
     if (dateError) {
       return res.status(400).json({ error: dateError });
@@ -739,23 +1152,25 @@ app.put('/api/bookings/:id', (req, res) => {
       }
     }
 
-    const conflict = findBookingConflict(Number(property_id), checkIn, checkOut, Number(req.params.id));
-    if (conflict) {
-      return res.status(409).json({
-        error: `Departamento ocupado hasta ${formatDateDisplay(conflict.checkOut)}`,
-        conflict,
-      });
+    if (status !== 'Cancelado') {
+      const conflict = findBookingConflict(Number(property_id), checkIn, checkOut, Number(req.params.id));
+      if (conflict) {
+        return res.status(409).json({
+          error: `Departamento ocupado hasta ${formatDateDisplay(conflict.checkOut)}`,
+          conflict,
+        });
+      }
     }
 
-    const money = normalizeBookingMoney(status, amountTotal, amountPaid, refundIssued);
-    ensureTenantFromBooking(tenant);
+    const money = normalizeBookingMoney(status, amountTotal, amountPaid, refundIssued, refundAmount);
+    ensureTenantFromBooking(normalizedTenant, { property_id, checkIn, bookingSource: normalizedBookingSource as string });
     db.prepare(
       `UPDATE bookings
-       SET tenant=?, property_id=?, guests=?, checkIn=?, checkOut=?, status=?, amountTotal=?, amountPaid=?, refundIssued=?,
+       SET tenant=?, property_id=?, guests=?, checkIn=?, checkOut=?, status=?, amountTotal=?, amountPaid=?, refundIssued=?, refundAmount=?,
            receivedBy=?, bookingSource=?, paymentMethod=?, receiptData=?, receiptName=?, receiptFiles=?
        WHERE id=?`
     ).run(
-      tenant,
+      normalizedTenant,
       property_id,
       guests,
       checkIn,
@@ -764,23 +1179,141 @@ app.put('/api/bookings/:id', (req, res) => {
       money.total,
       money.paid,
       money.refunded ? 1 : 0,
-      receivedBy || null,
-      bookingSource || null,
-      paymentMethod || null,
+      money.refundAmount,
+      normalizedReceivedBy || null,
+      normalizedBookingSource || null,
+      normalizedPaymentMethod || null,
       receiptData || null,
       receiptName || null,
       Array.isArray(receiptFiles) ? JSON.stringify(receiptFiles) : receiptFiles || null,
       req.params.id
     );
     syncBookingTransactions(Number(req.params.id), {
-      tenant,
+      tenant: normalizedTenant,
       property_id,
       status,
       amountTotal: money.total,
       amountPaid: money.paid,
       refundIssued: money.refunded,
+      refundAmount: money.refundAmount,
+      paymentMethod: normalizedPaymentMethod as string,
     });
     res.json(getBookingById(Number(req.params.id)));
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
+app.get('/api/finance/cycles', (_req, res) => {
+  try {
+    const cycles = db.prepare(`
+      SELECT *
+      FROM finance_cycles
+      ORDER BY id DESC
+    `).all().map((cycle: any) => ({
+      ...cycle,
+      income: Number(cycle.income || 0),
+      expense: Number(cycle.expense || 0),
+      balance: Number(cycle.balance || 0),
+      ownerSettlements: JSON.parse(cycle.ownerSettlements || '[]'),
+      paymentTotals: JSON.parse(cycle.paymentTotals || '[]'),
+      expenseRows: JSON.parse(cycle.expenseRows || '[]'),
+    }));
+    res.json(cycles);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
+app.post('/api/finance/close-cycle', (_req, res) => {
+  const closeCycle = db.transaction(() => {
+    const pendingBookings = getPendingPaymentBookings();
+    if (pendingBookings.length > 0) {
+      return { error: 'No se puede cobrar: hay reservas con pagos pendientes.', pendingBookings, status: 409 };
+    }
+
+    const snapshot = buildCycleSnapshot();
+    if (snapshot.balance <= 0 || snapshot.cycleTransactions.length === 0) {
+      return { error: 'No hay saldo disponible para cobrar.', status: 400 };
+    }
+
+    const withdrawal = db.prepare(`
+      INSERT INTO transactions (date, concept, amount, status, type, paymentMethod)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(snapshot.closedAt, 'Cobro de fondos - cierre de ciclo', snapshot.balance, 'Completado', 'expense', 'Cierre de ciclo');
+
+    const cycle = db.prepare(`
+      INSERT INTO finance_cycles (
+        closedAt, periodLabel, income, expense, balance, ownerSettlements, paymentTotals, expenseRows, transactionCount, withdrawalTransactionId
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      snapshot.closedAt,
+      snapshot.periodLabel,
+      snapshot.income,
+      snapshot.expense,
+      snapshot.balance,
+      JSON.stringify(snapshot.ownerSettlements),
+      JSON.stringify(snapshot.paymentTotals),
+      JSON.stringify(snapshot.expenseRows),
+      snapshot.cycleTransactions.length,
+      withdrawal.lastInsertRowid
+    );
+
+    const insertItem = db.prepare('INSERT INTO finance_cycle_items (cycle_id, transaction_id) VALUES (?, ?)');
+    snapshot.cycleTransactions.forEach((transaction) => insertItem.run(cycle.lastInsertRowid, transaction.id));
+
+    const savedCycle = db.prepare('SELECT * FROM finance_cycles WHERE id = ?').get(cycle.lastInsertRowid) as any;
+    const savedWithdrawal = db.prepare(`
+      SELECT transactions.*, COALESCE(properties.department, properties.name) as property
+      FROM transactions
+      LEFT JOIN properties ON transactions.property_id = properties.id
+      WHERE transactions.id = ?
+    `).get(withdrawal.lastInsertRowid);
+
+    return {
+      cycle: {
+        ...savedCycle,
+        income: Number(savedCycle.income || 0),
+        expense: Number(savedCycle.expense || 0),
+        balance: Number(savedCycle.balance || 0),
+        ownerSettlements: JSON.parse(savedCycle.ownerSettlements || '[]'),
+        paymentTotals: JSON.parse(savedCycle.paymentTotals || '[]'),
+        expenseRows: JSON.parse(savedCycle.expenseRows || '[]'),
+      },
+      transaction: savedWithdrawal,
+    };
+  });
+
+  try {
+    const result = closeCycle();
+    if ('error' in result) return res.status(result.status).json(result);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
+app.delete('/api/bookings/:id', (req, res) => {
+  try {
+    const booking = db.prepare('SELECT id, amountPaid, checkIn, checkOut FROM bookings WHERE id=?').get(req.params.id) as
+      | { id: number; amountPaid: number; checkIn: string; checkOut: string }
+      | undefined;
+    if (!booking) return res.status(404).json({ error: 'Reserva no encontrada' });
+
+    const today = new Date().toISOString().split('T')[0];
+    if (Math.round(Number(booking.amountPaid || 0)) > 0) {
+      return res.status(409).json({ error: 'No se puede eliminar una reserva con pagos registrados. Usá Cancelar.' });
+    }
+    if (booking.checkIn <= today && booking.checkOut > today) {
+      return res.status(409).json({ error: 'No se puede eliminar una reserva en curso. Usá Cancelar.' });
+    }
+    if (booking.checkOut <= today) {
+      return res.status(409).json({ error: 'No se puede eliminar una reserva finalizada.' });
+    }
+
+    db.prepare('DELETE FROM transactions WHERE booking_id=?').run(req.params.id);
+    db.prepare('DELETE FROM bookings WHERE id=?').run(req.params.id);
+    res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
   }
@@ -804,10 +1337,13 @@ app.get('/api/events', (req, res) => {
 app.post('/api/events', (req, res) => {
   try {
     const { title, description, property_id, date, type } = req.body;
+    const normalizedTitle = upperText(title);
+    const normalizedDescription = upperText(description);
+    const normalizedType = upperText(type);
     const result = db.prepare(
       'INSERT INTO events (title, description, property_id, date, type) VALUES (?, ?, ?, ?, ?)'
-    ).run(title, description, property_id, date, type);
-    res.json({ id: result.lastInsertRowid, ...req.body });
+    ).run(normalizedTitle, normalizedDescription, property_id, date, normalizedType);
+    res.json({ id: result.lastInsertRowid, ...req.body, title: normalizedTitle, description: normalizedDescription, type: normalizedType });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
   }
@@ -816,9 +1352,12 @@ app.post('/api/events', (req, res) => {
 app.put('/api/events/:id', (req, res) => {
   try {
     const { title, description, date, type } = req.body;
+    const normalizedTitle = upperText(title);
+    const normalizedDescription = upperText(description);
+    const normalizedType = upperText(type);
     db.prepare(
       'UPDATE events SET title=?, description=?, property_id=NULL, date=?, type=? WHERE id=?'
-    ).run(title, description, date, type, req.params.id);
+    ).run(normalizedTitle, normalizedDescription, date, normalizedType, req.params.id);
     const event = db.prepare('SELECT * FROM events WHERE id = ?').get(req.params.id);
     res.json(event);
   } catch (error) {
