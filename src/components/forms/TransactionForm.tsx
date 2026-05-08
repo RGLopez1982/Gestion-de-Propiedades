@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { createTransaction, getProperties, Transaction, Property } from '../../services/api';
+import { parseMoneyInput } from '../../lib/money';
+import { normalizeTextInput } from '../../lib/text';
 
 interface TransactionFormProps {
   onSuccess: (transaction: Transaction) => void;
@@ -17,6 +19,8 @@ export function TransactionForm({ onSuccess, onCancel }: TransactionFormProps) {
     amount: '',
     type: 'expense' as 'income' | 'expense',
     status: 'Completado',
+    paidBy: '',
+    paymentMethod: '',
   });
 
   useEffect(() => {
@@ -35,7 +39,7 @@ export function TransactionForm({ onSuccess, onCancel }: TransactionFormProps) {
     const { name, value } = e.target;
     setFormData(prev => ({
       ...prev,
-      [name]: value
+      [name]: normalizeTextInput(name, value)
     }));
   };
 
@@ -45,13 +49,26 @@ export function TransactionForm({ onSuccess, onCancel }: TransactionFormProps) {
     setLoading(true);
 
     try {
+      if (parseMoneyInput(formData.amount) <= 0) {
+        setError('El monto debe ser mayor a cero.');
+        setLoading(false);
+        return;
+      }
+      if (formData.type === 'income' && !formData.paymentMethod) {
+        setError('Los ingresos deben indicar medio de pago.');
+        setLoading(false);
+        return;
+      }
+
       const transaction = await createTransaction({
         date: formData.date,
         concept: formData.concept,
         property_id: formData.property_id ? parseInt(formData.property_id) : undefined,
-        amount: parseFloat(formData.amount),
+        amount: parseMoneyInput(formData.amount),
         type: formData.type,
         status: formData.status,
+        paidBy: formData.type === 'expense' ? formData.paidBy : undefined,
+        paymentMethod: formData.paymentMethod || undefined,
       });
       onSuccess(transaction);
     } catch (err) {
@@ -124,15 +141,55 @@ export function TransactionForm({ onSuccess, onCancel }: TransactionFormProps) {
           Monto ($) *
         </label>
         <input
-          type="number"
+          type="text"
+          inputMode="numeric"
           name="amount"
           value={formData.amount}
           onChange={handleChange}
           required
-          step="0.01"
-          placeholder="1200.00"
+          placeholder="1200"
           className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
         />
+      </div>
+
+      {formData.type === 'expense' && (
+        <div>
+          <label className="block text-sm font-bold text-on-surface mb-1">
+            Quien pagó el gasto *
+          </label>
+          <select
+            name="paidBy"
+            value={formData.paidBy}
+            onChange={handleChange}
+            required
+            className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
+          >
+            <option value="">Seleccionar dueño</option>
+            <option value="Diego">Diego</option>
+            <option value="Maru">Maru</option>
+            <option value="Laura">Laura</option>
+          </select>
+        </div>
+      )}
+
+      <div>
+        <label className="block text-sm font-bold text-on-surface mb-1">
+          Medio de pago{formData.type === 'income' ? ' *' : ''}
+        </label>
+        <select
+          name="paymentMethod"
+          value={formData.paymentMethod}
+          onChange={handleChange}
+          required={formData.type === 'income'}
+          className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
+        >
+          <option value="">Sin especificar</option>
+          <option value="Efectivo">Efectivo</option>
+          <option value="Transferencia">Transferencia</option>
+          <option value="Mercado Pago">Mercado Pago</option>
+          <option value="Tarjeta">Tarjeta</option>
+          <option value="Otro">Otro</option>
+        </select>
       </div>
 
       <div>
