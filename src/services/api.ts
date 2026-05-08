@@ -60,6 +60,7 @@ export interface Property {
   status: string;
   monthlyRate: number;
   department?: string;
+  availabilityStatus?: string;
   nightlyRate?: number;
   capacity?: number;
   occupancy?: number;
@@ -99,8 +100,37 @@ export interface Transaction {
   amount: number;
   status: string;
   type: 'income' | 'expense';
+  paidBy?: string;
+  paymentMethod?: string;
   createdAt?: string;
   property?: string;
+}
+
+export interface FinanceCycle {
+  id: number;
+  closedAt: string;
+  periodLabel: string;
+  income: number;
+  expense: number;
+  balance: number;
+  ownerSettlements: Array<{
+    owner: string;
+    expensesPaid: number;
+    profitShare: number;
+    payout: number;
+  }>;
+  paymentTotals: Array<{
+    method: string;
+    amount: number;
+  }>;
+  expenseRows: Array<{
+    concept: string;
+    amount: number;
+    paidBy?: string;
+  }>;
+  transactionCount: number;
+  withdrawalTransactionId?: number;
+  createdAt?: string;
 }
 
 export interface Booking {
@@ -114,6 +144,7 @@ export interface Booking {
   amountTotal?: number;
   amountPaid?: number;
   refundIssued?: boolean | number;
+  refundAmount?: number;
   receivedBy?: string;
   bookingSource?: string;
   paymentMethod?: string;
@@ -231,6 +262,23 @@ export const createTransaction = async (transaction: Omit<Transaction, 'id' | 'c
   });
   if (!res.ok) throw new Error(await getApiError(res, 'Failed to create transaction'));
   return res.json();
+};
+
+export const getFinanceCycles = async (): Promise<FinanceCycle[]> => {
+  const res = await apiFetch(`${API_BASE}/finance/cycles`);
+  if (!res.ok) throw new Error(await getApiError(res, 'Failed to fetch finance cycles'));
+  return res.json();
+};
+
+export const closeFinanceCycle = async (): Promise<{ cycle: FinanceCycle; transaction: Transaction }> => {
+  const res = await apiFetch(`${API_BASE}/finance/close-cycle`, { method: 'POST' });
+  if (!res.ok) throw new Error(await getApiError(res, 'Failed to close finance cycle'));
+  return res.json();
+};
+
+export const deleteBooking = async (id: number): Promise<void> => {
+  const res = await apiFetch(`${API_BASE}/bookings/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(await getApiError(res, 'Failed to delete booking'));
 };
 
 // Bookings
