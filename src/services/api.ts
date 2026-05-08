@@ -264,6 +264,21 @@ export const createTransaction = async (transaction: Omit<Transaction, 'id' | 'c
   return res.json();
 };
 
+export const updateTransaction = async (id: number, transaction: Omit<Transaction, 'id' | 'createdAt'>): Promise<Transaction> => {
+  const res = await apiFetch(`${API_BASE}/transactions/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(transaction),
+  });
+  if (!res.ok) throw new Error(await getApiError(res, 'Failed to update transaction'));
+  return res.json();
+};
+
+export const deleteTransaction = async (id: number): Promise<void> => {
+  const res = await apiFetch(`${API_BASE}/transactions/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(await getApiError(res, 'Failed to delete transaction'));
+};
+
 export const getFinanceCycles = async (): Promise<FinanceCycle[]> => {
   const res = await apiFetch(`${API_BASE}/finance/cycles`);
   if (!res.ok) throw new Error(await getApiError(res, 'Failed to fetch finance cycles'));
