@@ -9,10 +9,11 @@ import {
   Bell,
   LogOut,
   TicketPercent,
-  X
+  X,
+  MessageCircle
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { getBookings, getEvents, Booking, EventItem } from '../../services/api';
+import { getBookings, getEvents, getTenants, Booking, EventItem, Tenant } from '../../services/api';
 import { getBookingTimelineStatus, isUpcomingBooking, sortBookingsByCheckIn } from '../../lib/bookings';
 import { formatDateDisplay } from '../../lib/dates';
 
@@ -24,6 +25,7 @@ export function Navbar({ onLogout }: NavbarProps) {
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
+  const [tenants, setTenants] = useState<Tenant[]>([]);
   const notificationsRef = useRef<HTMLDivElement | null>(null);
 
   const navItems = [
@@ -38,9 +40,10 @@ export function Navbar({ onLogout }: NavbarProps) {
   useEffect(() => {
     const loadNotifications = async () => {
       try {
-        const [bookingData, eventData] = await Promise.all([getBookings(), getEvents()]);
+        const [bookingData, eventData, tenantData] = await Promise.all([getBookings(), getEvents(), getTenants()]);
         setBookings(bookingData);
         setEvents(eventData);
+        setTenants(tenantData);
       } catch (error) {
         console.error('Error loading notifications:', error);
       }
@@ -61,6 +64,58 @@ export function Navbar({ onLogout }: NavbarProps) {
   }, []);
 
   const notifications = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const normalizedTenantNames = tenants.map((tenant) => ({
+      ...tenant,
+      normalizedName: tenant.name.trim().toUpperCase(),
+    }));
+    const findTenantPhone = (booking: Booking) => normalizedTenantNames.find((tenant) => tenant.normalizedName === booking.tenant.trim().toUpperCase())?.phone;
+    const getDaysUntilCheckIn = (booking: Booking) => {
+      const checkIn = new Date(`${booking.checkIn}T00:00:00`);
+      return Math.round((checkIn.getTime() - today.getTime()) / 86400000);
+    };
+    const buildReminderText = (booking: Booking) => [
+      `Hola ${booking.tenant}, te recordamos tu reserva en ${booking.property || 'el departamento'}.`,
+      `Check-in: ${formatDateDisplay(booking.checkIn)}.`,
+      `Check-out: ${formatDateDisplay(booking.checkOut)}.`,
+      `Huespedes: ${booking.guests}.`,
+      `Total: $${Number(booking.amountTotal || 0).toFixed(2)}.`,
+      `Pagado: $${Number(booking.amountPaid || 0).toFixed(2)}.`,
+    ].join('\n');
+    const buildWhatsAppUrl = (booking: Booking) => {
+      const phone = findTenantPhone(booking)?.replace(/\D/g, '');
+      if (!phone) return undefined;
+      return `https://wa.me/${phone}?text=${encodeURIComponent(buildReminderText(booking))}`;
+    };
+
+    const reminderNotifications = sortBookingsByCheckIn(bookings)
+      .filter((booking) => {
+        const status = getBookingTimelineStatus(booking);
+        const daysUntil = getDaysUntilCheckIn(booking);
+        return status !== 'Cancelado' && status !== 'Finalizada' && daysUntil >= 0 && daysUntil <= 3;
+      })
+      .slice(0, 4)
+      .map((booking) => {
+        const daysUntil = getDaysUntilCheckIn(booking);
+        const title = daysUntil === 0
+          ? 'Enviar aviso de ingreso hoy'
+          : daysUntil === 1
+            ? 'Enviar aviso de ingreso manana'
+            : `Enviar aviso en ${daysUntil} dias`;
+
+        return {
+          id: `reminder-${booking.id}`,
+          title,
+          detail: `${booking.tenant} - ${booking.property || 'Sin departamento'}`,
+          meta: `Check-in ${formatDateDisplay(booking.checkIn)} · ${booking.guests} huespedes`,
+          path: '/calendar',
+          color: 'bg-amber-400',
+          actionUrl: buildWhatsAppUrl(booking),
+          actionLabel: 'WhatsApp',
+        };
+      });
+
     const bookingNotifications = sortBookingsByCheckIn(bookings.filter(isUpcomingBooking)).slice(0, 4).map((booking) => ({
       id: `booking-${booking.id}`,
       title: getBookingTimelineStatus(booking),
@@ -79,8 +134,8 @@ export function Navbar({ onLogout }: NavbarProps) {
       color: 'bg-blue-400',
     }));
 
-    return [...bookingNotifications, ...eventNotifications].slice(0, 6);
-  }, [bookings, events]);
+    return [...reminderNotifications, ...bookingNotifications, ...eventNotifications].slice(0, 8);
+  }, [bookings, events, tenants]);
 
   return (
     <>
@@ -152,19 +207,37 @@ export function Navbar({ onLogout }: NavbarProps) {
                     <p className="px-3 py-6 text-center text-sm text-on-surface-variant">No hay avisos pendientes.</p>
                   ) : (
                     notifications.map((item) => (
-                      <Link
+                      <div
                         key={item.id}
-                        to={item.path}
-                        onClick={() => setIsNotificationsOpen(false)}
-                        className="flex gap-3 rounded-lg px-3 py-3 text-left hover:bg-surface-container-low transition-colors"
+                        className="rounded-lg px-3 py-3 hover:bg-surface-container-low transition-colors"
                       >
-                        <span className={cn('mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full', item.color)} />
-                        <span className="min-w-0">
-                          <span className="block text-xs font-bold text-on-surface">{item.title}</span>
-                          <span className="block truncate text-sm font-semibold text-on-surface">{item.detail}</span>
-                          <span className="block text-[11px] text-on-surface-variant">{item.meta}</span>
-                        </span>
-                      </Link>
+                        <div className="flex gap-3 text-left">
+                          <span className={cn('mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full', item.color)} />
+                          <div className="min-w-0 flex-1">
+                            <Link
+                              to={item.path}
+                              onClick={() => setIsNotificationsOpen(false)}
+                              className="block min-w-0"
+                            >
+                              <span className="block text-xs font-bold text-on-surface">{item.title}</span>
+                              <span className="block truncate text-sm font-semibold text-on-surface">{item.detail}</span>
+                              <span className="block text-[11px] text-on-surface-variant">{item.meta}</span>
+                            </Link>
+                            {item.actionUrl && (
+                              <a
+                                href={item.actionUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                onClick={() => setIsNotificationsOpen(false)}
+                                className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-secondary px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-secondary/90"
+                              >
+                                <MessageCircle className="h-3.5 w-3.5" />
+                                {item.actionLabel}
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      </div>
                     ))
                   )}
                 </div>
