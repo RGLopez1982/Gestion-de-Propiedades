@@ -138,7 +138,7 @@ export function TransactionForm({ onSuccess, onCancel, transaction }: Transactio
           onChange={handleChange}
           className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
         >
-          <option value="">Sin asignar</option>
+          <option value="">Todos los departamentos</option>
           {properties.map(prop => (
             <option key={prop.id} value={prop.id}>
               {prop.department || prop.location || prop.name}
@@ -175,7 +175,8 @@ export function TransactionForm({ onSuccess, onCancel, transaction }: Transactio
             required
             className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
           >
-            <option value="">Seleccionar dueño</option>
+            <option value="">Seleccionar origen del pago</option>
+            <option value="PLATA DEL INGRESO">Plata del ingreso</option>
             <option value="Diego">Diego</option>
             <option value="Maru">Maru</option>
             <option value="Laura">Laura</option>
