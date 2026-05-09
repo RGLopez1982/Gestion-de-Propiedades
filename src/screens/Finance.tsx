@@ -256,8 +256,10 @@ export default function Finance() {
   
   const balance = totalIncome - totalExpense;
   const withdrawableBalance = currentCycleBalance;
+  const todayKey = new Date().toISOString().split('T')[0];
   const pendingPaymentBookings = bookings.filter((booking) => {
     if (booking.status === 'Cancelado') return false;
+    if (booking.checkIn > todayKey) return false;
     const total = Math.round(Number(booking.amountTotal || 0));
     const paid = Math.round(Number(booking.amountPaid || 0));
     return total > 0 && paid < total;
@@ -914,7 +916,7 @@ export default function Finance() {
                     <div>
                       <p className="text-xs font-bold">No se puede cobrar todavia</p>
                       <p className="mt-1 text-[10px] opacity-80">
-                        Primero registra el pago completo de estas reservas:
+                        Primero registra el pago completo de las reservas que ya iniciaron:
                       </p>
                       <div className="mt-2 space-y-1">
                         {pendingPaymentBookings.slice(0, 4).map((booking) => (
