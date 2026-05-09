@@ -26,6 +26,7 @@ import { formatMoney } from '../lib/money';
 
 const OWNERS = ['Diego', 'Maru', 'Laura'];
 const sameOwner = (value: string | undefined, owner: string) => value?.trim().toUpperCase() === owner.toUpperCase();
+const getTransactionPropertyLabel = (transaction: Transaction) => transaction.property || 'Todos los departamentos';
 
 type OwnerSettlement = {
   owner: string;
@@ -325,7 +326,7 @@ export default function Finance() {
         <tr>
           <td>${escapeHtml(formatDateDisplay(transaction.date))}</td>
           <td>${escapeHtml(transaction.concept)}</td>
-          <td>${escapeHtml(transaction.property || 'Sin departamento')}</td>
+          <td>${escapeHtml(getTransactionPropertyLabel(transaction))}</td>
           <td>${escapeHtml(transaction.type === 'income' ? 'Ingreso' : 'Egreso')}</td>
           <td>${escapeHtml(transaction.paymentMethod || '-')}</td>
           <td>${escapeHtml(transaction.paidBy || '-')}</td>
@@ -779,7 +780,7 @@ export default function Finance() {
                             </p>
                           )}
                         </td>
-                        <td className="px-6 py-4 text-xs text-outline">{t.property || '-'}</td>
+                        <td className="px-6 py-4 text-xs text-outline">{getTransactionPropertyLabel(t)}</td>
                         <td className={cn("px-6 py-4 text-xs font-bold text-right", t.type === 'income' ? 'text-secondary' : 'text-error')}>
                           {t.type === 'income' ? '+' : '-'}${Math.abs(t.amount).toFixed(2)}
                         </td>
