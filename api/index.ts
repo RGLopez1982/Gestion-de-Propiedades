@@ -370,39 +370,67 @@ const syncBookingTransactions = async (
   bookingId: number | string,
   booking: { tenant: string; property_id?: number; status: string; amountTotal?: number; amountPaid?: number; refundIssued?: boolean; refundAmount?: number; paymentMethod?: string }
 ) => {
-  await q('DELETE FROM transactions WHERE booking_id = $1', [bookingId]);
   const { total, paid, refunded, refundAmount } = normalizeBookingMoney(booking.status, booking.amountTotal, booking.amountPaid, booking.refundIssued, booking.refundAmount);
   const date = new Date().toISOString().split('T')[0];
   const propertyId = booking.property_id || null;
+  const closed = await one<{ income: number; expense: number }>(`
+    SELECT
+      COALESCE(SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END), 0) as income,
+      COALESCE(SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END), 0) as expense
+    FROM transactions
+    WHERE booking_id = $1
+      AND id IN (SELECT transaction_id FROM finance_cycle_items)
+  `, [bookingId]);
 
-  if (booking.status === 'Confirmado' && total > 0) {
+  await q(`
+    DELETE FROM transactions
+    WHERE booking_id = $1
+      AND id NOT IN (SELECT transaction_id FROM finance_cycle_items)
+  `, [bookingId]);
+
+  const closedIncome = Number(closed?.income || 0);
+  const closedExpense = Number(closed?.expense || 0);
+  const targetIncome = booking.status === 'Confirmado'
+    ? total
+    : booking.status === 'Pendiente' || booking.status === 'Cancelado'
+      ? paid
+      : 0;
+  const incomeDelta = roundMoney(targetIncome - closedIncome);
+  const refundDelta = roundMoney((refunded ? refundAmount : 0) - closedExpense);
+
+  if (incomeDelta > 0) {
+    const concept = booking.status === 'Pendiente'
+      ? `Pago parcial reserva - ${booking.tenant}`
+      : closedIncome > 0
+        ? `Saldo reserva - ${booking.tenant}`
+        : booking.status === 'Cancelado'
+          ? `Pago reserva cancelada - ${booking.tenant}`
+          : `Reserva confirmada - ${booking.tenant}`;
     await q(
       'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type, payment_method) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-      [date, `Reserva confirmada - ${booking.tenant}`, propertyId, bookingId, total, 'Completado', 'income', booking.paymentMethod || null]
+      [date, concept, propertyId, bookingId, incomeDelta, 'Completado', 'income', booking.paymentMethod || null]
     );
-    return;
   }
 
-  if (booking.status === 'Pendiente' && paid > 0) {
+  if (incomeDelta < 0) {
     await q(
-      'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type, payment_method) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-      [date, `Pago parcial reserva - ${booking.tenant}`, propertyId, bookingId, paid, 'Completado', 'income', booking.paymentMethod || null]
+      'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+      [date, `Ajuste pago reserva - ${booking.tenant}`, propertyId, bookingId, Math.abs(incomeDelta), 'Completado', 'expense']
     );
-    return;
   }
 
-  if (booking.status === 'Cancelado' && paid > 0) {
+  if (refundDelta > 0) {
+    await q(
+      'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+      [date, `Devolucion reserva cancelada - ${booking.tenant}`, propertyId, bookingId, refundDelta, 'Completado', 'expense']
+    );
+  }
+
+  if (refundDelta < 0) {
     await q(
       'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type, payment_method) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-      [date, `Pago reserva cancelada - ${booking.tenant}`, propertyId, bookingId, paid, 'Completado', 'income', booking.paymentMethod || null]
+      [date, `Ajuste devolucion reserva - ${booking.tenant}`, propertyId, bookingId, Math.abs(refundDelta), 'Completado', 'income', booking.paymentMethod || null]
     );
-
-    if (refunded) {
-      await q(
-        'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-        [date, `Devolucion reserva cancelada - ${booking.tenant}`, propertyId, bookingId, refundAmount, 'Completado', 'expense']
-      );
-    }
   }
 };
 
@@ -917,10 +945,11 @@ app.post('/api/finance/close-cycle', async (_req, res) => {
       FROM bookings
       LEFT JOIN properties ON bookings.property_id = properties.id
       WHERE bookings.status != 'Cancelado'
+        AND bookings.check_in <= $1
         AND ROUND(COALESCE(bookings.amount_total, 0)) > 0
         AND ROUND(COALESCE(bookings.amount_paid, 0)) < ROUND(COALESCE(bookings.amount_total, 0))
       ORDER BY bookings.check_in ASC
-    `);
+    `, [new Date().toISOString().split('T')[0]]);
     if (pendingResult.rows.length > 0) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: 'No se puede cobrar: hay reservas con pagos pendientes.', pendingBookings: pendingResult.rows });
