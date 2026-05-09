@@ -415,10 +415,11 @@ const getPendingPaymentBookings = () => db.prepare(`
   FROM bookings
   LEFT JOIN properties ON bookings.property_id = properties.id
   WHERE status != 'Cancelado'
+    AND checkIn <= ?
     AND ROUND(COALESCE(amountTotal, 0)) > 0
     AND ROUND(COALESCE(amountPaid, 0)) < ROUND(COALESCE(amountTotal, 0))
   ORDER BY checkIn ASC
-`).all() as Array<{ id: number; tenant: string; property?: string; amountTotal: number; amountPaid: number }>;
+`).all(new Date().toISOString().split('T')[0]) as Array<{ id: number; tenant: string; property?: string; amountTotal: number; amountPaid: number }>;
 
 const buildCycleSnapshot = () => {
   const lastCycle = db.prepare('SELECT withdrawalTransactionId FROM finance_cycles ORDER BY id DESC LIMIT 1').get() as
@@ -585,36 +586,61 @@ const syncBookingTransactions = (
   bookingId: number | bigint,
   booking: { tenant: string; property_id?: number; status: string; amountTotal?: number; amountPaid?: number; refundIssued?: boolean; refundAmount?: number; paymentMethod?: string }
 ) => {
-  db.prepare('DELETE FROM transactions WHERE booking_id = ?').run(bookingId);
-
   const { total, paid, refunded, refundAmount } = normalizeBookingMoney(booking.status, booking.amountTotal, booking.amountPaid, booking.refundIssued, booking.refundAmount);
   const date = new Date().toISOString().split('T')[0];
   const propertyId = booking.property_id || null;
+  const closed = db.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END), 0) as income,
+      COALESCE(SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END), 0) as expense
+    FROM transactions
+    WHERE booking_id = ?
+      AND id IN (SELECT transaction_id FROM finance_cycle_items)
+  `).get(bookingId) as { income: number; expense: number };
 
-  if (booking.status === 'Confirmado' && total > 0) {
+  db.prepare(`
+    DELETE FROM transactions
+    WHERE booking_id = ?
+      AND id NOT IN (SELECT transaction_id FROM finance_cycle_items)
+  `).run(bookingId);
+
+  const targetIncome = booking.status === 'Confirmado'
+    ? total
+    : booking.status === 'Pendiente' || booking.status === 'Cancelado'
+      ? paid
+      : 0;
+  const incomeDelta = roundMoney(targetIncome - Number(closed.income || 0));
+  const refundDelta = roundMoney((refunded ? refundAmount : 0) - Number(closed.expense || 0));
+
+  if (incomeDelta > 0) {
+    const concept = booking.status === 'Pendiente'
+      ? `Pago parcial reserva - ${booking.tenant}`
+      : Number(closed.income || 0) > 0
+        ? `Saldo reserva - ${booking.tenant}`
+        : booking.status === 'Cancelado'
+          ? `Pago reserva cancelada - ${booking.tenant}`
+          : `Reserva confirmada - ${booking.tenant}`;
     db.prepare(
       'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type, paymentMethod) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(date, `Reserva confirmada - ${booking.tenant}`, propertyId, bookingId, total, 'Completado', 'income', booking.paymentMethod || null);
-    return;
+    ).run(date, concept, propertyId, bookingId, incomeDelta, 'Completado', 'income', booking.paymentMethod || null);
   }
 
-  if (booking.status === 'Pendiente' && paid > 0) {
+  if (incomeDelta < 0) {
     db.prepare(
-      'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type, paymentMethod) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(date, `Pago parcial reserva - ${booking.tenant}`, propertyId, bookingId, paid, 'Completado', 'income', booking.paymentMethod || null);
-    return;
+      'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(date, `Ajuste pago reserva - ${booking.tenant}`, propertyId, bookingId, Math.abs(incomeDelta), 'Completado', 'expense');
   }
 
-  if (booking.status === 'Cancelado' && paid > 0) {
+  if (refundDelta > 0) {
+    db.prepare(
+      'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(date, `Devolucion reserva cancelada - ${booking.tenant}`, propertyId, bookingId, refundDelta, 'Completado', 'expense');
+  }
+
+  if (refundDelta < 0) {
     db.prepare(
       'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type, paymentMethod) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(date, `Pago reserva cancelada - ${booking.tenant}`, propertyId, bookingId, paid, 'Completado', 'income', booking.paymentMethod || null);
-
-    if (refunded) {
-      db.prepare(
-        'INSERT INTO transactions (date, concept, property_id, booking_id, amount, status, type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(date, `Devolucion reserva cancelada - ${booking.tenant}`, propertyId, bookingId, refundAmount, 'Completado', 'expense');
-    }
+    ).run(date, `Ajuste devolucion reserva - ${booking.tenant}`, propertyId, bookingId, Math.abs(refundDelta), 'Completado', 'income', booking.paymentMethod || null);
   }
 };
 
