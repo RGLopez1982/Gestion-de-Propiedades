@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
-import { createProperty, updateProperty, Property } from '../../services/api';
+import { createProperty, updateProperty, getBnaRate, Property } from '../../services/api';
 import { parseMoneyInput } from '../../lib/money';
 import { normalizeTextInput } from '../../lib/text';
+import React, { useState, useEffect } from 'react';
 
 interface PropertyFormProps {
   onSuccess: (property: Property) => void;
@@ -26,6 +26,7 @@ const getImageList = (property?: Property | null) => {
 export function PropertyForm({ onSuccess, onCancel, property }: PropertyFormProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [bnaRate, setBnaRate] = useState<number | null>(null);
   const initialImages = getImageList(property);
   const [formData, setFormData] = useState({
     name: property?.name || '',
@@ -38,6 +39,27 @@ export function PropertyForm({ onSuccess, onCancel, property }: PropertyFormProp
   const [uploadedImages, setUploadedImages] = useState<string[]>(
     initialImages.filter((image) => image.startsWith('data:'))
   );
+
+  useEffect(() => {
+    const fetchRate = async () => {
+      try {
+        const rateData = await getBnaRate();
+        setBnaRate(rateData.rate);
+        if (property) {
+          const storedRate = property.nightlyRate ?? property.monthlyRate ?? 0;
+          if (storedRate > 10000) {
+            setFormData(prev => ({
+              ...prev,
+              nightlyRate: String(Math.round(storedRate / rateData.rate))
+            }));
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching BNA rate in form:', err);
+      }
+    };
+    fetchRate();
+  }, [property]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
@@ -95,12 +117,15 @@ export function PropertyForm({ onSuccess, onCancel, property }: PropertyFormProp
         .filter(Boolean)
         .concat(uploadedImages);
 
+      const rate = bnaRate || 1;
+      const nightlyRate = parseMoneyInput(formData.nightlyRate) * rate;
+
       const payload = {
         name: formData.name,
         location: formData.department,
         department: formData.department,
-        monthlyRate: parseMoneyInput(formData.nightlyRate),
-        nightlyRate: parseMoneyInput(formData.nightlyRate),
+        monthlyRate: nightlyRate,
+        nightlyRate: nightlyRate,
         capacity: parseInt(formData.capacity) || 1,
         image: images[0],
         images,
@@ -157,7 +182,7 @@ export function PropertyForm({ onSuccess, onCancel, property }: PropertyFormProp
 
       <div>
         <label className="block text-sm font-bold text-on-surface mb-1">
-          Precio por noche ($)
+          Precio por noche (USD)
         </label>
         <input
           type="text"
@@ -166,9 +191,14 @@ export function PropertyForm({ onSuccess, onCancel, property }: PropertyFormProp
           value={formData.nightlyRate}
           onChange={handleChange}
           required
-          placeholder="45000"
+          placeholder="e.g. 50"
           className="w-full px-4 py-2 border border-outline-variant/30 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
         />
+        {bnaRate && formData.nightlyRate && !isNaN(Number(formData.nightlyRate)) && (
+          <p className="text-xs text-on-surface-variant mt-1">
+            Equivalente en Pesos: <strong>${Math.round(Number(formData.nightlyRate) * bnaRate).toLocaleString('es-AR')} ARS</strong> (Venta BNA: ${bnaRate.toFixed(2)})
+          </p>
+        )}
       </div>
 
       <div>

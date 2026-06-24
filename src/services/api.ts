@@ -377,3 +377,9 @@ export const updateMonthlyGoal = async (monthlyGoal: number): Promise<number> =>
   const data = await res.json();
   return data.monthlyGoal;
 };
+
+export const getBnaRate = async (): Promise<{ rate: number }> => {
+  const res = await apiFetch(`${API_BASE}/bna-rate`);
+  if (!res.ok) throw new Error('Failed to fetch BNA rate');
+  return res.json();
+};

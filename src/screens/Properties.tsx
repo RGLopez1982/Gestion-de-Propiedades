@@ -9,7 +9,7 @@ import {
   X
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { getProperties, Property } from '../services/api';
+import { getProperties, getBnaRate, Property } from '../services/api';
 import { useModal } from '../hooks/useModal';
 import { Modal } from '../components/Modal';
 import { PropertyForm } from '../components/forms/PropertyForm';
@@ -17,6 +17,24 @@ import { PropertyForm } from '../components/forms/PropertyForm';
 export default function Properties() {
   const [properties, setProperties] = useState<Property[]>([]);
   const [loading, setLoading] = useState(true);
+  const [bnaRate, setBnaRate] = useState<number | null>(null);
+
+  const getRates = (storedRate: number, rate: number | null) => {
+    const currentRate = rate || 1495.00;
+    if (storedRate > 10000) {
+      return {
+        usd: storedRate / currentRate,
+        ars: storedRate,
+        isLegacyArs: true
+      };
+    } else {
+      return {
+        usd: storedRate,
+        ars: storedRate * currentRate,
+        isLegacyArs: false
+      };
+    }
+  };
   const [selectedProperty, setSelectedProperty] = useState<Property | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState({
@@ -40,6 +58,12 @@ export default function Properties() {
     const fetchData = async () => {
       setLoading(true);
       await loadProperties();
+      try {
+        const rateData = await getBnaRate();
+        setBnaRate(rateData.rate);
+      } catch (err) {
+        console.error('Error fetching BNA rate:', err);
+      }
       setLoading(false);
     };
     fetchData();
@@ -126,21 +150,32 @@ export default function Properties() {
     || filters.capacity !== 'Todas'
     || filters.sort !== 'department';
 
-  const summary = filteredProperties.slice(0, 3).map((prop) => ({
-    id: prop.id,
-    unit: prop.department || prop.location || prop.name,
-    status: (prop.availabilityStatus || prop.status) === 'Ocupado' ? 'OCUPADO' : (prop.availabilityStatus || prop.status) === 'Disponible' ? 'DISPONIBLE' : 'MANTENIMIENTO',
-    statusColor: getStatusColor(prop.availabilityStatus || prop.status).statusColor,
-    capacity: `${prop.capacity || 1} persona${(prop.capacity || 1) > 1 ? 's' : ''}`,
-    nightly: `$${(prop.nightlyRate ?? prop.monthlyRate ?? 0).toFixed(2)}`
-  }));
+  const summary = filteredProperties.slice(0, 3).map((prop) => {
+    const storedRate = prop.nightlyRate ?? prop.monthlyRate ?? 0;
+    const rates = getRates(storedRate, bnaRate);
+    return {
+      id: prop.id,
+      unit: prop.department || prop.location || prop.name,
+      status: (prop.availabilityStatus || prop.status) === 'Ocupado' ? 'OCUPADO' : (prop.availabilityStatus || prop.status) === 'Disponible' ? 'DISPONIBLE' : 'MANTENIMIENTO',
+      statusColor: getStatusColor(prop.availabilityStatus || prop.status).statusColor,
+      capacity: `${prop.capacity || 1} persona${(prop.capacity || 1) > 1 ? 's' : ''}`,
+      nightly: `USD ${rates.usd.toFixed(2)} / $${rates.ars.toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} ARS`
+    };
+  });
 
   return (
     <div className="max-w-7xl mx-auto px-4 md:px-8 py-8 flex flex-col gap-8 pb-32">
       <section className="flex flex-col md:flex-row md:items-end justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl md:text-3xl font-bold text-primary">Gestion de Departamentos</h1>
-          <p className="text-on-surface-variant mt-1">Administra departamentos temporarios, tarifas por noche y capacidad.</p>
+          <p className="text-on-surface-variant mt-1 flex flex-wrap items-center gap-2">
+            <span>Administra departamentos temporarios, tarifas por noche y capacidad.</span>
+            {bnaRate && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-primary/10 text-primary">
+                Cotización BNA Venta: ${bnaRate.toFixed(2)} ARS
+              </span>
+            )}
+          </p>
         </div>
         <div className="flex gap-3">
           <button
@@ -278,7 +313,8 @@ export default function Properties() {
             const { statusColor, indicatorColor } = getStatusColor(displayStatus);
             const images = getPropertyImages(prop);
             const coverImage = images[0] || prop.image || 'https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?auto=format&fit=crop&q=80&w=600';
-            const nightlyRate = prop.nightlyRate ?? prop.monthlyRate ?? 0;
+            const storedRate = prop.nightlyRate ?? prop.monthlyRate ?? 0;
+            const rates = getRates(storedRate, bnaRate);
 
             return (
               <div key={prop.id} className="group bg-white border border-outline-variant/30 rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-all cursor-pointer">
@@ -325,8 +361,9 @@ export default function Properties() {
                       <span className="text-[9px] font-bold text-outline uppercase tracking-widest leading-none">
                         Precio por noche
                       </span>
-                      <span className="text-xs font-bold mt-1 text-on-surface">
-                        ${nightlyRate.toFixed(2)}
+                      <span className="text-xs font-bold mt-1 text-on-surface flex flex-col">
+                        <span>USD {rates.usd.toFixed(2)}</span>
+                        <span className="text-[10px] text-on-surface-variant font-normal">${rates.ars.toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} ARS</span>
                       </span>
                     </div>
                     <button

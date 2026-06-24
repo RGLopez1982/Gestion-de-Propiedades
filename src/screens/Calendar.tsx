@@ -99,7 +99,7 @@ export default function Calendar() {
     });
   }, [bookings, daysInMonth, month, year]);
 
-  const sidebarBookings = sortSidebarBookings(bookings.filter((booking) => booking.status !== 'Cancelado')).slice(0, 6);
+  const sidebarBookings = sortSidebarBookings(bookings.filter((booking) => booking.status !== 'Cancelado'));
 
   const handleBookingCreated = (booking: Booking) => {
     loadBookings();
@@ -219,7 +219,7 @@ export default function Calendar() {
             {sidebarBookings.length === 0 ? (
               <p className="text-sm text-on-surface-variant">No hay reservas registradas.</p>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2">
                 {sidebarBookings.map((booking) => {
                   const timelineStatus = getBookingTimelineStatus(booking);
                   const receiptFiles = parseStoredFiles(booking.receiptFiles, booking.receiptData, booking.receiptName);

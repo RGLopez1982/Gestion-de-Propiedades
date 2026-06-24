@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { createBooking, deleteBooking, getBookings, getProperties, updateBooking, Booking, Property } from '../../services/api';
+import { createBooking, deleteBooking, getBookings, getProperties, updateBooking, getBnaRate, Booking, Property } from '../../services/api';
 import { formatDateDisplay } from '../../lib/dates';
 import { openStoredFile, parseStoredFiles } from '../../lib/files';
 import { formatMoney, parseMoneyInput } from '../../lib/money';
@@ -41,6 +41,7 @@ export function BookingForm({ onSuccess, onCancel, onDelete, booking }: BookingF
   const [error, setError] = useState('');
   const [properties, setProperties] = useState<Property[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [bnaRate, setBnaRate] = useState<number | null>(null);
   const [formData, setFormData] = useState({
     tenant: booking?.tenant || '',
     property_id: booking?.property_id ? String(booking.property_id) : '',
@@ -62,9 +63,14 @@ export function BookingForm({ onSuccess, onCancel, onDelete, booking }: BookingF
   useEffect(() => {
     const loadProperties = async () => {
       try {
-        const [propertyData, bookingData] = await Promise.all([getProperties(), getBookings()]);
+        const [propertyData, bookingData, rateData] = await Promise.all([
+          getProperties(),
+          getBookings(),
+          getBnaRate().catch(() => ({ rate: 1495.00 }))
+        ]);
         setProperties(propertyData);
         setBookings(bookingData);
+        setBnaRate(rateData.rate);
       } catch (err) {
         console.error('Error loading booking form data:', err);
       }
@@ -112,9 +118,11 @@ export function BookingForm({ onSuccess, onCancel, onDelete, booking }: BookingF
   const deleteBlockReason = getDeleteBlockReason(booking);
   const nights = dateDiffInNights(formData.checkIn, formData.checkOut);
   const suggestedTotal = useMemo(() => {
-    const rate = selectedProperty?.nightlyRate ?? selectedProperty?.monthlyRate ?? 0;
-    return nights > 0 ? rate * nights : 0;
-  }, [nights, selectedProperty]);
+    const storedRate = selectedProperty?.nightlyRate ?? selectedProperty?.monthlyRate ?? 0;
+    const activeBnaRate = bnaRate || 1495.00;
+    const rateInArs = storedRate > 10000 ? storedRate : storedRate * activeBnaRate;
+    return nights > 0 ? rateInArs * nights : 0;
+  }, [nights, selectedProperty, bnaRate]);
 
   useEffect(() => {
     if (!booking && suggestedTotal > 0 && formData.status === 'Confirmado') {

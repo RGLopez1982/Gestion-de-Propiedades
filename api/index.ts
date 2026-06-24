@@ -592,6 +592,72 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
+let cachedBnaRate: { rate: number; timestamp: number } | null = null;
+
+async function getBnaDollarRate(): Promise<number> {
+  try {
+    const response = await fetch('https://www.bna.com.ar/Personas', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'es-ES,es;q=0.9'
+      }
+    });
+    if (response.ok) {
+      const html = await response.text();
+      const billetesSection = html.split('id="billetes"')[1]?.split('</table>')[0] || '';
+      const match = billetesSection.match(/Dolar U\.S\.A[\s\S]*?<td>([\d,.]+)<\/td>[\s\S]*?<td>([\d,.]+)<\/td>/i);
+      if (match) {
+        const sellStr = match[2].trim().replace(/\./g, '').replace(',', '.');
+        const rate = parseFloat(sellStr);
+        if (rate > 0 && !isNaN(rate)) {
+          return rate;
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Error scraping BNA directly:', e);
+  }
+
+  // Fallback to DolarAPI
+  try {
+    const response = await fetch('https://dolarapi.com/v1/cotizaciones/bna');
+    if (response.ok) {
+      const data = await response.json() as { venta: number };
+      if (data && data.venta > 0) {
+        return data.venta;
+      }
+    }
+  } catch (e) {
+    console.error('Error fetching from DolarAPI fallback:', e);
+  }
+
+  return 1495.00; // default/fallback rate matching BNA rate
+}
+
+async function getCachedBnaRate() {
+  const now = Date.now();
+  if (cachedBnaRate && (now - cachedBnaRate.timestamp < 1000 * 60 * 60)) { // 1 hour cache
+    return cachedBnaRate.rate;
+  }
+  try {
+    const rate = await getBnaDollarRate();
+    cachedBnaRate = { rate, timestamp: now };
+    return rate;
+  } catch (err) {
+    return cachedBnaRate ? cachedBnaRate.rate : 1495.00;
+  }
+}
+
+app.get('/api/bna-rate', async (_req, res) => {
+  try {
+    const rate = await getCachedBnaRate();
+    res.json({ rate });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
 app.get('/api/properties', async (_req, res) => {
   try {
     const today = new Date().toISOString().split('T')[0];
